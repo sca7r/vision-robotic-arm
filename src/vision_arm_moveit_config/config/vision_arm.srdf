@@ -1,0 +1,54 @@
+<?xml version="1.0" ?>
+<robot name="vision_arm">
+
+  <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base_link"/>
+
+  <group name="arm">
+    <joint name="joint1_base_rotate"/>
+    <joint name="joint2_shoulder"/>
+    <joint name="joint3_elbow"/>
+    <joint name="joint4_forearm"/>
+    <joint name="joint5_wrist"/>
+    <joint name="joint6_gripper_mount"/>
+  </group>
+
+  <group name="gripper">
+    <joint name="joint_jaw1"/>
+  </group>
+
+  <end_effector name="gripper" parent_link="link6_gripper_mount" group="gripper" parent_group="arm"/>
+
+  <group_state name="home" group="arm">
+    <joint name="joint1_base_rotate" value="0"/>
+    <joint name="joint2_shoulder" value="0"/>
+    <joint name="joint3_elbow" value="0"/>
+    <joint name="joint4_forearm" value="0"/>
+    <joint name="joint5_wrist" value="0"/>
+    <joint name="joint6_gripper_mount" value="0"/>
+  </group_state>
+  <!-- joint_jaw1 limits are [-0.052, 0]; 0 is fully retracted (open), -0.052 closed. -->
+  <group_state name="open" group="gripper">
+    <joint name="joint_jaw1" value="0"/>
+  </group_state>
+  <group_state name="closed" group="gripper">
+    <joint name="joint_jaw1" value="-0.052"/>
+  </group_state>
+
+  <!-- ponytail: only structurally-adjacent pairs are disabled here (the safe,
+       always-true minimum) instead of running Setup Assistant's link-pair
+       sampler. Non-adjacent self-collision (already surveyed - see the
+       vision_arm-joint-limits-decision memory: 7 zones found, limits deliberately
+       NOT clamped for it) is intentionally left ENABLED so OMPL/the planning
+       scene rejects those configurations at plan time, which is exactly the
+       "defer self-collision to Phase 4 MoveIt" decision. -->
+  <disable_collisions link1="base_link" link2="link1_base_rotate" reason="Adjacent"/>
+  <disable_collisions link1="link1_base_rotate" link2="link2_upper_arm" reason="Adjacent"/>
+  <disable_collisions link1="link2_upper_arm" link2="link3_elbow" reason="Adjacent"/>
+  <disable_collisions link1="link3_elbow" link2="link4_forearm" reason="Adjacent"/>
+  <disable_collisions link1="link4_forearm" link2="link5_wrist" reason="Adjacent"/>
+  <disable_collisions link1="link5_wrist" link2="link6_gripper_mount" reason="Adjacent"/>
+  <disable_collisions link1="link6_gripper_mount" link2="gripper" reason="Adjacent"/>
+  <disable_collisions link1="gripper" link2="jaw1" reason="Adjacent"/>
+  <disable_collisions link1="gripper" link2="jaw2" reason="Adjacent"/>
+
+</robot>

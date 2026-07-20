@@ -1,0 +1,38 @@
+# max_velocity mirrors vel_limit in vision_arm.urdf.xacro (1.0 rad/s). Acceleration
+# has no URDF equivalent (steppers don't expose one) and MoveIt's time
+# parameterizer requires a value regardless, so 2.0 rad/s^2 is a conservative
+# placeholder in the same spirit as eff_limit in the URDF - not measured.
+default_velocity_scaling_factor: 0.5
+default_acceleration_scaling_factor: 0.5
+
+joint_limits:
+  joint1_base_rotate:
+    has_velocity_limits: true
+    max_velocity: 1.0
+    has_acceleration_limits: true
+    max_acceleration: 2.0
+  joint2_shoulder:
+    has_velocity_limits: true
+    max_velocity: 1.0
+    has_acceleration_limits: true
+    max_acceleration: 2.0
+  joint3_elbow:
+    has_velocity_limits: true
+    max_velocity: 1.0
+    has_acceleration_limits: true
+    max_acceleration: 2.0
+  joint4_forearm:
+    has_velocity_limits: true
+    max_velocity: 1.0
+    has_acceleration_limits: true
+    max_acceleration: 2.0
+  joint5_wrist:
+    has_velocity_limits: true
+    max_velocity: 1.0
+    has_acceleration_limits: true
+    max_acceleration: 2.0
+  joint6_gripper_mount:
+    has_velocity_limits: true
+    max_velocity: 1.0
+    has_acceleration_limits: true
+    max_acceleration: 2.0

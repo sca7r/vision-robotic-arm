@@ -1,0 +1,275 @@
+<?xml version="1.0"?>
+<robot name="vision_arm" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find vision_arm_description)/urdf/gripper.xacro"/>
+
+  <!-- Joint limits derived from Software1/Low_Level_Arduino/Robot_Arduino_trajectory/
+       Robot_Arduino_trajectory.ino: meh_limit[] (mechanical step limits from the
+       limit switch) * step_angle[] (deg/full-step, J3 motor is 0.9 deg, rest 1.8 deg)
+       * microstep[] (1/8, 1/8, 1/4, 1/2, 1/2, 1/2) / gear_ratio[] (docs/B_Design_decisions.rst).
+       homeAll() does NOT leave every joint's current_position at 0 after homing -
+       J1/J4/J5/J6 are re-zeroed to a home offset (10000/2275/1173/3838 steps) partway
+       through their mechanical travel, and CAD zero (URDF joint value 0) corresponds to
+       that homed pose, not to the limit switch. Limits below are recentered so lower/upper
+       bracket the true travel on each side of home (span = meh_limit * step_angle *
+       microstep / gear_ratio, unchanged); J2/J3 home at their limit switch (offset 0) so
+       their range is still [0, upper]. Verify sign/direction against real hardware in Phase 8.
+       velocity/effort are conservative placeholders, not measured stepper torque curves. -->
+  <xacro:property name="vel_limit" value="1.0"/>
+  <!-- 5.0 N*m (the original placeholder) starved joint2_shoulder in Gazebo: gravity
+       alone needs ~28 N*m at the output shaft to hold ~5.7kg of downstream arm+gripper
+       at a ~0.5m moment arm (mass*g*arm), confirmed by controller_state showing
+       "reference" climbing normally while "feedback" stayed pinned at zero under real
+       physics. Bumped with margin; still a placeholder pending measured stepper+
+       gearbox torque curves (cycloidal 15-27:1 reductions make tens of N*m at the
+       output plausible from a small stepper). -->
+  <xacro:property name="eff_limit" value="50.0"/>
+
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0.0754452420016786 0.0706653851885525 0.174716050606158" rpy="0 0 0"/>
+      <mass value="1.75590983031249"/>
+      <inertia ixx="0.0106901651591523" ixy="1.2533292416581E-05" ixz="-1.78802486116636E-05"
+               iyy="0.0121389538778755" iyz="-0.0001726147454493" izz="0.00523087609446992"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://vision_arm_description/meshes/base_link.STL"/></geometry>
+    </visual>
+    <!-- Collision = mesh bounding box, not the STL: DART grinding the 120k-tri
+         base mesh against the ground plane every 1ms step (and 278k tris total
+         across the arm) held sim RTF at ~0.006. Boxes restore realtime; they're
+         conservative for MoveIt planning, which is fine. Jaw STLs stay meshes -
+         they're small and need real geometry to grasp. -->
+    <collision>
+      <origin xyz="0.0757 -0.1697 0.0768" rpy="0 0 0"/>
+      <geometry><box size="0.1679 0.254 0.1222"/></geometry>
+    </collision>
+  </link>
+
+  <link name="link1_base_rotate"> <!-- was: rotary_base -->
+    <inertial>
+      <origin xyz="3.6594E-07 -0.12491 -0.0091222" rpy="0 0 0"/>
+      <mass value="1.8968"/>
+      <inertia ixx="0.011703" ixy="6.2683E-07" ixz="2.7765E-07"
+               iyy="0.010005" iyz="-0.00096832" izz="0.0065158"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://vision_arm_description/meshes/link1_base_rotate.STL"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 -0.127 0.0024" rpy="0 0 0"/>
+      <geometry><box size="0.1596 0.254 0.2408"/></geometry>
+    </collision>
+  </link>
+  <joint name="joint1_base_rotate" type="revolute"> <!-- was: rotary_base -->
+    <origin xyz="0.075629 -0.21266 0.050734" rpy="-1.5708 -6.123E-17 -1.5708"/>
+    <parent link="base_link"/>
+    <child link="link1_base_rotate"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-1.5708" upper="1.5708" velocity="${vel_limit}" effort="${eff_limit}"/>
+  </joint>
+
+  <link name="link2_upper_arm"> <!-- was: nadlaktica -->
+    <inertial>
+      <origin xyz="0.11187 -0.011704 0.007695" rpy="0 0 0"/>
+      <mass value="3.097"/>
+      <inertia ixx="0.011686" ixy="0.0012432" ixz="-0.0018781"
+               iyy="0.03891" iyz="-5.4012E-05" izz="0.032612"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://vision_arm_description/meshes/link2_upper_arm.STL"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.1563 -0.0075 -0.0025" rpy="0 0 0"/>
+      <geometry><box size="0.4175 0.1199 0.1853"/></geometry>
+    </collision>
+  </link>
+  <joint name="joint2_shoulder" type="revolute"> <!-- was: nadlaktica -->
+    <origin xyz="0 -0.20182 0" rpy="2.7756E-15 -1.3878E-15 -1.8111"/>
+    <parent link="link1_base_rotate"/>
+    <child link="link2_upper_arm"/>
+    <axis xyz="0 0 1"/>
+    <!-- lower=-0.001 (not exactly 0): joint2/joint3 home at their limit switch
+         (see the joint-limit comment at the top of this file), so simulated
+         home position lands on this bound to within float noise (~1e-14).
+         MoveIt's CheckStartStateBounds has no tolerance and rejects a start
+         state sitting exactly on/past a hard 0 limit, so both get a hair of
+         slack rather than a real range change. -->
+    <limit lower="-0.001" upper="3.4907" velocity="${vel_limit}" effort="${eff_limit}"/>
+  </joint>
+
+  <link name="link3_elbow"> <!-- was: lakat -->
+    <inertial>
+      <origin xyz="0.020310022580536 -0.0354589471585284 0.00171229454365077" rpy="0 0 0"/>
+      <mass value="1.2726491805247"/>
+      <inertia ixx="0.00430935066273582" ixy="-0.000472663673983171" ixz="2.10793692092687E-05"
+               iyy="0.00388873322685888" iyz="-0.000102922808916268" izz="0.00512549454697952"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://vision_arm_description/meshes/link3_elbow.STL"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0464 -0.0335 0.0037" rpy="0 0 0"/>
+      <geometry><box size="0.1827 0.157 0.1368"/></geometry>
+    </collision>
+  </link>
+  <joint name="joint3_elbow" type="revolute"> <!-- was: lakat -->
+    <origin xyz="0.32 0 0" rpy="3.1416 -6.3895E-16 -1.1753"/>
+    <parent link="link2_upper_arm"/>
+    <child link="link3_elbow"/>
+    <axis xyz="0 0 -1"/>
+    <limit lower="-0.001" upper="1.8326" velocity="${vel_limit}" effort="${eff_limit}"/>
+  </joint>
+
+  <link name="link4_forearm"> <!-- was: podlaktica -->
+    <inertial>
+      <origin xyz="0.015666 0.10444 0.04524" rpy="0 0 0"/>
+      <mass value="0.8658"/>
+      <inertia ixx="0.0043737" ixy="-0.00033248" ixz="-0.00029637"
+               iyy="0.0017275" iyz="-0.0011009" izz="0.0039233"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://vision_arm_description/meshes/link4_forearm.STL"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0183 0.1122 0.0576" rpy="0 0 0"/>
+      <geometry><box size="0.1403 0.3178 0.1905"/></geometry>
+    </collision>
+  </link>
+  <joint name="joint4_forearm" type="revolute"> <!-- was: podlaktica -->
+    <origin xyz="0 -0.0735 0" rpy="-0.5648 -0.78173 1.7809"/>
+    <parent link="link3_elbow"/>
+    <child link="link4_forearm"/>
+    <axis xyz="0.14804 0.90477 0.39934"/>
+    <limit lower="-3.0164" upper="2.2872" velocity="${vel_limit}" effort="${eff_limit}"/>
+  </joint>
+
+  <link name="link5_wrist"> <!-- was: saka -->
+    <inertial>
+      <origin xyz="0.00102127447654127 0.00173769308862193 -0.00307332521672926" rpy="0 0 0"/>
+      <mass value="0.195660541483626"/>
+      <inertia ixx="0.000196163267087824" ixy="-1.19915207726741E-07" ixz="-4.99910323817217E-07"
+               iyy="0.000195263940589931" iyz="9.07364788265256E-06" izz="0.000136132402412911"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://vision_arm_description/meshes/link5_wrist.STL"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0013 0.0071 -0.0041" rpy="0 0 0"/>
+      <geometry><box size="0.0745 0.0744 0.1018"/></geometry>
+    </collision>
+  </link>
+  <joint name="joint5_wrist" type="revolute"> <!-- was: saka -->
+    <origin xyz="0.037114 0.22683 0.10011" rpy="2.2965 -0.74045 -0.57161"/>
+    <parent link="link4_forearm"/>
+    <child link="link5_wrist"/>
+    <axis xyz="-1 0 0"/>
+    <limit lower="-1.675" upper="2.0378" velocity="${vel_limit}" effort="${eff_limit}"/>
+  </joint>
+
+  <link name="link6_gripper_mount"> <!-- was: hvataljka -->
+    <inertial>
+      <origin xyz="0.00017222 0.00017758 0.00947" rpy="0 0 0"/>
+      <mass value="0.020284"/>
+      <inertia ixx="3.4622E-06" ixy="-9.927E-08" ixz="-2.2616E-08"
+               iyy="3.4561E-06" iyz="-2.332E-08" izz="6.3508E-06"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://vision_arm_description/meshes/link6_gripper_mount.STL"/></geometry>
+    </visual>
+    <collision>
+      <origin xyz="0.0002 0.0007 0.008" rpy="0 0 0"/>
+      <geometry><box size="0.0574 0.0581 0.0135"/></geometry>
+    </collision>
+  </link>
+  <joint name="joint6_gripper_mount" type="revolute"> <!-- was: hvataljka -->
+    <origin xyz="0 0 -0.042312" rpy="-3.1416 2.5362E-15 0.2419"/>
+    <parent link="link5_wrist"/>
+    <child link="link6_gripper_mount"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.1416" upper="3.1612" velocity="${vel_limit}" effort="${eff_limit}"/>
+  </joint>
+
+  <!-- Camera is the MSG gripper's built-in mount (see gripper.xacro), not a
+       separate bracket - the gripper macro below adds camera_link /
+       camera_optical_link as children of "gripper". -->
+  <xacro:msg_gripper parent_link="link6_gripper_mount"/>
+
+  <ros2_control name="vision_arm_system" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <xacro:macro name="vision_arm_joint_interface" params="joint">
+      <joint name="${joint}">
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:macro>
+    <xacro:vision_arm_joint_interface joint="joint1_base_rotate"/>
+    <xacro:vision_arm_joint_interface joint="joint2_shoulder"/>
+    <xacro:vision_arm_joint_interface joint="joint3_elbow"/>
+    <xacro:vision_arm_joint_interface joint="joint4_forearm"/>
+    <xacro:vision_arm_joint_interface joint="joint5_wrist"/>
+    <xacro:vision_arm_joint_interface joint="joint6_gripper_mount"/>
+    <xacro:vision_arm_joint_interface joint="joint_jaw1"/>
+    <!-- jaw2 is a real commanded joint, not a mimic: neither gz sim's DART
+         build nor gz_ros2_control 1.2 enforces URDF <mimic> (verified: no
+         mimic code in libgz_ros2_control-system.so), so the tag was removed
+         from gripper.xacro and gripper_controller commands both jaws -
+         callers send [jaw1, -jaw1]. -->
+    <xacro:vision_arm_joint_interface joint="joint_jaw2"/>
+  </ros2_control>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find vision_arm_gazebo)/config/controllers.yaml</parameters>
+    </plugin>
+  </gazebo>
+
+  <!-- RGBD sensor at camera_link: Gazebo looks along -Z of the sensor's own
+       pose, and camera_link (see gripper.xacro) was built with exactly that
+       convention (view direction = its own -Z), so it's attached with zero
+       extra offset. gz_frame_id points at camera_optical_link (the ROS-optical-
+       convention child frame) since the depth/point-cloud data is inherently
+       expressed in optical axes (x-right, y-down, z-forward-along-view). -->
+  <!-- ponytail: camera defaults OFF - this VM has no GPU and llvmpipe takes
+       >45s per RGBD frame, which lockstep-stalls physics to RTF 0.006 (sim
+       unusable). Enable with xacro arg camera:=true on a GPU box / VBox with
+       3D accel when Phase 5 vision needs it; camera_link TF frames exist
+       either way. -->
+  <xacro:arg name="camera" default="false"/>
+  <xacro:if value="$(arg camera)">
+  <gazebo reference="camera_link">
+    <sensor name="wrist_camera" type="rgbd_camera">
+      <always_on>true</always_on>
+      <!-- ponytail: 320x240@5Hz - this machine software-renders (no dGPU) and
+           640x480@15Hz tanked RTF; bump back up if/when run on a GPU box -->
+      <update_rate>5</update_rate>
+      <visualize>true</visualize>
+      <topic>camera</topic>
+      <gz_frame_id>camera_optical_link</gz_frame_id>
+      <camera>
+        <horizontal_fov>1.047</horizontal_fov>
+        <image>
+          <width>320</width>
+          <height>240</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>3.0</far>
+        </clip>
+      </camera>
+    </sensor>
+  </gazebo>
+  </xacro:if>
+
+</robot>

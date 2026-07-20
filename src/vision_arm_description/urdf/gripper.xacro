@@ -1,0 +1,142 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- MSG parallel stepper gripper (Source Robotics / PCrnjak, CERN-OHL-S v2).
+       Geometry + inertials + joint limits taken verbatim from the vendor's exported
+       PAR6_MSG.urdf (MSG_gripper_description/URDF/msg_gripper/urdf/PAR6_MSG.urdf),
+       with the PAR6 arm links stripped (vendor file is already gripper-only) and the
+       gripper root reparented onto our own flange via gripper_mount_joint.
+
+       gripper_mount_joint transform derived from mesh bounding boxes, not measured
+       hardware: link6_gripper_mount.STL is a thin flange disc sitting at
+       z in [0.0012, 0.0147] in its own frame (so local +Z = outward, away from the
+       arm, outer face at z=0.0147), while gripper.STL's body+jaws occupy z in
+       [-0.101, -0.042] in ITS OWN frame - note the gripper's own origin sits
+       4.16cm above the mesh's top surface (a mounting-standoff gap baked into the
+       vendor's frame, not zero), so the mesh's closest point to its own origin is
+       at local z=-0.0416, not z=0. Rotating 180 about X maps the gripper's -Z to
+       the flange's +Z; the z offset is solved so that point lands exactly on the
+       flange's outer face: flange_outer(0.0147) - (-gripper_top_local_z(-0.0416))
+       = -0.0269. The extra +1.935 rad yaw corrects a Z-twist the bbox math can't
+       see (no feature on either mesh marks "rotationally aligned") - found by
+       jogging joint6_gripper_mount in RViz until the gripper visually lined up
+       with the arm, then baked into this fixed joint so it's already aligned at
+       joint6=0 instead of relying on a nonzero home position. No real adapter
+       plate is designed yet (3D-print, later) - this only fixes gross
+       placement/orientation, not exact mating. -->
+  <xacro:macro name="msg_gripper" params="parent_link">
+    <joint name="gripper_mount_joint" type="fixed">
+      <origin xyz="0 0 -0.0269" rpy="3.14159265 0 1.935"/>
+      <parent link="${parent_link}"/>
+      <child link="gripper"/>
+    </joint>
+
+    <link name="gripper">
+      <inertial>
+        <origin xyz="-0.00642470048892474 0.000282668798476438 -0.0695192335056825" rpy="0 0 0"/>
+        <mass value="0.167623200457379"/>
+        <inertia ixx="0.000140871735417615" ixy="-9.82778432876683E-07" ixz="-2.72691487145471E-06"
+                 iyy="2.45392416247037E-05" iyz="-2.78909378823719E-07" izz="0.00013036472950858"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://vision_arm_description/meshes/gripper/gripper.STL"/></geometry>
+      </visual>
+      <!-- bbox box instead of the 64k-tri STL - see collision note in
+           vision_arm.urdf.xacro; jaws below keep real meshes for grasping -->
+      <collision>
+        <origin xyz="-0.026 0 -0.0714" rpy="0 0 0"/>
+        <geometry><box size="0.106 0.1594 0.0597"/></geometry>
+      </collision>
+    </link>
+
+    <link name="jaw1">
+      <inertial>
+        <origin xyz="0.000317390129572659 -0.0636011550113124 -0.0505219142777576" rpy="0 0 0"/>
+        <mass value="0.0267240448883812"/>
+        <inertia ixx="1.05776518737304E-05" ixy="4.17466317108795E-08" ixz="-4.94412707881078E-07"
+                 iyy="1.02820791329259E-05" iyz="5.30501392593403E-07" izz="1.56447936575552E-06"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://vision_arm_description/meshes/gripper/jaw1.STL"/></geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://vision_arm_description/meshes/gripper/jaw1.STL"/></geometry>
+      </collision>
+    </link>
+    <joint name="joint_jaw1" type="prismatic">
+      <origin xyz="0.02835 0 -0.1409" rpy="-3.1416 0 3.1416"/>
+      <parent link="gripper"/>
+      <child link="jaw1"/>
+      <axis xyz="0 -1 0"/>
+      <limit lower="-0.052" upper="0" effort="20" velocity="0.1"/>
+      <!-- friction keeps the jaws from creeping under gravity in Gazebo
+           before the controller sends its first command -->
+      <dynamics damping="0.01" friction="0.1"/>
+    </joint>
+
+    <link name="jaw2">
+      <inertial>
+        <origin xyz="0.000313277058697659 0.0636017321420815 -0.0494862901594326" rpy="0 0 0"/>
+        <mass value="0.0267245850480152"/>
+        <inertia ixx="1.05767573086608E-05" ixy="-4.18351972636844E-08" ixz="-7.32706121136976E-07"
+                 iyy="1.02816308296904E-05" iyz="-5.3239570329707E-07" izz="1.56361148863754E-06"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://vision_arm_description/meshes/gripper/jaw2.STL"/></geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><mesh filename="package://vision_arm_description/meshes/gripper/jaw2.STL"/></geometry>
+      </collision>
+    </link>
+    <!-- No <mimic> tag: Gazebo's DART build can't enforce it (prints an error
+         and leaves the joint free), so jaw2 is a real commanded joint driven
+         by gripper_controller with a mirrored command [x, -x]. -->
+    <joint name="joint_jaw2" type="prismatic">
+      <origin xyz="0.02835 0 -0.1409" rpy="-3.1416 0 3.1416"/>
+      <parent link="gripper"/>
+      <child link="jaw2"/>
+      <axis xyz="0 -1 0"/>
+      <!-- lower is -0.5mm, not 0: DART pins a joint that starts exactly on its
+           lower limit (velocity cmds ignored); jaw1 starting on its UPPER
+           limit is unaffected -->
+      <limit lower="-0.0005" upper="0.052" effort="20" velocity="0.1"/>
+      <dynamics damping="0.01" friction="0.1"/>
+    </joint>
+
+    <!-- Built-in eye-in-hand camera mount molded into the gripper body (visible as
+         the angled wedge above the jaws in docs/assets/MSG_and_camera.png) - not a
+         guess, taken directly from the vendor's MJCF (MSG_gripper_description/
+         msg_gripper.xml, body "camera_center": pos="0 -0.09 0.1", xyaxes="-1 0 0 0 0 1").
+         camera_link keeps that native (MuJoCo) camera-frame convention: +X right,
+         +Y up, +Z out of the lens (view direction -Z). camera_optical_link applies
+         the standard 180-about-X flip to the ROS optical convention (+Z forward
+         into the scene, +X right, +Y down) that vision_msgs/image_geometry expect. -->
+    <!-- MoveIt end-effector tip: jaw joints are symmetric about this point
+         (both joint_jaw1/2 origins are xyz="0.02835 0 -0.1409" in the gripper
+         frame, moving +-Y), so it's the grasp-center point between open jaws. -->
+    <link name="tcp"/>
+    <joint name="tcp_joint" type="fixed">
+      <origin xyz="0.02835 0 -0.1409" rpy="0 0 0"/>
+      <parent link="gripper"/>
+      <child link="tcp"/>
+    </joint>
+
+    <link name="camera_link"/>
+    <joint name="camera_joint" type="fixed">
+      <origin xyz="0 -0.09 0.1" rpy="1.5707963 0 3.1415927"/>
+      <parent link="gripper"/>
+      <child link="camera_link"/>
+    </joint>
+    <link name="camera_optical_link"/>
+    <joint name="camera_optical_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="3.14159265 0 0"/>
+      <parent link="camera_link"/>
+      <child link="camera_optical_link"/>
+    </joint>
+  </xacro:macro>
+</robot>

@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+vendor
+# ROS 2 colcon workspace
+build/
+install/
+log/
+
+# Vendored upstream sources (not distributed)
+vendor/

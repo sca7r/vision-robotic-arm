@@ -1,0 +1,26 @@
+moveit_simple_controller_manager:
+  controller_names:
+    - arm_controller
+
+  arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - joint1_base_rotate
+      - joint2_shoulder
+      - joint3_elbow
+      - joint4_forearm
+      - joint5_wrist
+      - joint6_gripper_mount
+
+# ponytail: gripper isn't wired in here - gripper_controller is a plain
+# JointGroupPositionController (no FollowJointTrajectory/GripperCommand action),
+# and Phase 6's pick/place task nodes will drive it directly over
+# /gripper_controller/commands instead of through MoveIt. Add a
+# GripperCommand entry here if that ever needs to change.
+
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.2
+  allowed_goal_duration_margin: 0.5
+  allowed_start_tolerance: 0.01
