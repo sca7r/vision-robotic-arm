@@ -1,6 +1,6 @@
 """Offline reach map: where can the arm do a top-down grasp, per mount height?
 
-No ROS, no sim. FK only (borrowed from look_poses.py). Answers the one question
+No ROS, no sim. FK only. Answers the one question
 that decides the new world layout: if we bolt base_link to a work surface, how
 high above that surface should the base sit for the cubes to be graspable?
 
@@ -79,7 +79,7 @@ def pose(q):
     return R, p, np.array(trail)
 
 
-# tcp's -Z points at the workspace (see spike_ik.py), so a straight-down grasp
+# tcp's -Z points at the workspace (see gripper.xacro), so a straight-down grasp
 # is +Z up: R[:,2] . [0,0,1] == 1.
 rng = np.random.default_rng(0)
 samples = []

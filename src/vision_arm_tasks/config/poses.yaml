@@ -1,0 +1,33 @@
+# Everything that changes when the environment changes. Point the node at a
+# different copy with `-p poses_file:=/path/to/other.yaml` and nothing else
+# needs touching.
+
+# The home pose: six joint angles from which the camera frames every cube and
+# every cube is reachable straight down. Found with tools/find_look_pose.py
+# against a live move_group on 2026-08-13; re-run it if the bench, the camera
+# mount or the object layout moves.
+home: [-1.1215, 0.047, 0.7946, 1.026, 0.6052, -1.0986]
+
+# Named drop-off spots, x/y in base_link. A command may also give explicit
+# coordinates instead of a name. Heights are not listed: a cube is placed at
+# the same height it was picked from, which is the bench.
+places:
+  left: [-0.20, -0.42]
+  right: [0.20, -0.42]
+  front: [0.00, -0.55]
+
+# Gripper jaw positions, commanded as [x, -x]. 0 is fully open (10.4 cm).
+# grip closes to 10.4 - 2*|grip| on a 5 cm cube. -0.030 leaves 3 mm of squeeze
+# per side and the green cube slipped out of it mid-lift; -0.035 commands 8 mm
+# of interference, which a position-controlled jaw turns into real grip force.
+# Raise |grip| for a smaller object, lower it for a bigger one.
+open: 0.0
+grip: -0.035
+
+# How far from the requested spot a cube may land before the move is reported
+# as failed. Generous on purpose: this is here to catch "the cube never moved",
+# not to grade millimetres.
+place_tolerance: 0.03
+
+# Standoff above a cube for the approach and retreat waypoints.
+approach: 0.10

@@ -6,10 +6,9 @@ and, where noted, with the sim already running.
 | Script | Needs | What it does |
 |---|---|---|
 | `find_look_pose.py <urdf>` | sim + `move_group` | Searches joint space for a look pose that frames 2+ cubes, **is collision-free** (`/check_state_validity`) and can actually reach them (`/compute_ik`). The collision filter is the one that was missing - see below. |
-| `look_poses.py <urdf>` | nothing | The FK + pinhole-projection half alone, no ROS. Fast, but does NOT check self-collision, so its answers are not directly usable. |
-| `spike_ik.py [colour] [standoff]` | sim + `move_group` + perception | Asks `/compute_ik` whether a grasp above a detected cube is solvable, across several yaws. |
 | `reach_map.py <urdf> [n]` | nothing | Samples joint space and reports, per mount height, where a top-down grasp is geometrically possible. FK only, no self-collision check, so its areas are upper bounds. This is what chose the flat bolt-to-the-bench layout. |
 | `weld_check.py [q1 or q1,..,q6]` | sim | Commands one trajectory and prints what each joint actually reached plus the base pose from `gz model`. Catches the silent failure where the action reports SUCCEEDED with a joint pinned at 0. |
+| `fake_detections.py` | sim | Publishes `/detections` from Gazebo ground truth, so pick and place can be tested without the camera (which costs ~45 s/frame on a GPU-less box). A stub on purpose: if a grasp works here but not with the real detector, the difference is perception. |
 | `check_accuracy.py [seconds]` | sim + perception | Compares `/detections` against Gazebo ground truth, transformed through the live base pose from `gz model -m vision_arm -p`. |
 | `sweep.py` | sim + perception | Sweeps joint1 and shows the world model accumulating cubes across views. |
 
