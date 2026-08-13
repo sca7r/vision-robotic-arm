@@ -9,7 +9,7 @@ PKG_ROOT = Path(__file__).resolve().parents[1]
 def test_world_is_valid_xml_with_expected_models():
     tree = ET.parse(PKG_ROOT / "worlds" / "vision_arm_world.sdf")
     names = {m.attrib["name"] for m in tree.getroot().iter("model")}
-    assert {"table", "cube_red", "cube_green", "cube_blue"} <= names
+    assert {"cube_red", "cube_green", "cube_blue"} <= names
 
 
 def test_controllers_yaml_declares_expected_controllers():

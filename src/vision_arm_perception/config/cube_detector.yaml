@@ -1,0 +1,13 @@
+# HSV bounds are 6 numbers per band (h_lo s_lo v_lo h_hi s_hi v_hi) in OpenCV's
+# 0-179 hue scale. Red gets two bands because its hue wraps around 0.
+/**:
+  ros__parameters:
+    target_frame: base_link
+    min_area: 60          # px; a 5 cm cube at 30 cm is ~330 px at 320x240, so this
+                      # is a floor against speckle, not a tuned threshold
+    depth_patch: 2        # median over a 5x5 patch, rejects edge speckle
+    cube_size: 0.05
+    hsv:
+      red: [0, 120, 70, 10, 255, 255, 170, 120, 70, 179, 255, 255]
+      green: [40, 120, 70, 80, 255, 255]
+      blue: [100, 120, 70, 130, 255, 255]

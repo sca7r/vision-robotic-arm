@@ -1,22 +1,33 @@
 <?xml version="1.0" ?>
 <robot name="vision_arm">
 
-  <virtual_joint name="world_joint" type="fixed" parent_frame="world" child_link="base_link"/>
+  <!-- No <virtual_joint>: the URDF now has a real "world" link and a real fixed
+       world_joint holding base_link to the workbench, so the model root is
+       already "world". Declaring a virtual joint onto a link that is not the
+       root makes MoveIt log "Skipping virtual joint" and ignore it. -->
 
+  <!-- Declared as a CHAIN, not a joint list. The joint-list form ended the group at
+       joint6_gripper_mount, so the group's tip link was link6_gripper_mount (the bare
+       flange) and KDL solved IK for a point ~140 mm short of where the gripper
+       actually grasps. Every Cartesian pose goal was off by that much. A chain to
+       "tcp" walks the two fixed joints (gripper_mount_joint, tcp_joint) past the
+       flange to the real grasp centre; the group still has exactly 6 actuated joints,
+       because fixed joints contribute no DOF. This is also what BUILD_PLAN Phase 4
+       specified ("end-effector = gripper TCP, midpoint between jaws"). -->
   <group name="arm">
-    <joint name="joint1_base_rotate"/>
-    <joint name="joint2_shoulder"/>
-    <joint name="joint3_elbow"/>
-    <joint name="joint4_forearm"/>
-    <joint name="joint5_wrist"/>
-    <joint name="joint6_gripper_mount"/>
+    <chain base_link="base_link" tip_link="tcp"/>
   </group>
 
+  <!-- Both jaws. jaw2 is a real independently-commanded joint, not a URDF <mimic>
+       (see gripper.xacro), so listing only jaw1 left MoveIt believing a "closed"
+       gripper still had one jaw wide open - i.e. collision checking against a closed
+       gripper was wrong. Values below mirror: closed is [-0.052, +0.052]. -->
   <group name="gripper">
     <joint name="joint_jaw1"/>
+    <joint name="joint_jaw2"/>
   </group>
 
-  <end_effector name="gripper" parent_link="link6_gripper_mount" group="gripper" parent_group="arm"/>
+  <end_effector name="gripper" parent_link="tcp" group="gripper" parent_group="arm"/>
 
   <group_state name="home" group="arm">
     <joint name="joint1_base_rotate" value="0"/>
@@ -26,12 +37,16 @@
     <joint name="joint5_wrist" value="0"/>
     <joint name="joint6_gripper_mount" value="0"/>
   </group_state>
-  <!-- joint_jaw1 limits are [-0.052, 0]; 0 is fully retracted (open), -0.052 closed. -->
+  <!-- joint_jaw1 limits are [-0.052, 0]; 0 is fully retracted (open), -0.052 closed.
+       joint_jaw2 runs the opposite way over [-0.0005, 0.052], so the two are always
+       mirrored: open = [0, 0], closed = [-0.052, +0.052]. -->
   <group_state name="open" group="gripper">
     <joint name="joint_jaw1" value="0"/>
+    <joint name="joint_jaw2" value="0"/>
   </group_state>
   <group_state name="closed" group="gripper">
     <joint name="joint_jaw1" value="-0.052"/>
+    <joint name="joint_jaw2" value="0.052"/>
   </group_state>
 
   <!-- ponytail: only structurally-adjacent pairs are disabled here (the safe,
@@ -42,6 +57,11 @@
        scene rejects those configurations at plan time, which is exactly the
        "defer self-collision to Phase 4 MoveIt" decision. -->
   <disable_collisions link1="base_link" link2="link1_base_rotate" reason="Adjacent"/>
+  <!-- The arm is bolted to the workbench, so its base plate is in permanent
+       contact with the top. Only the base is exempt: every other link must
+       still be checked against the bench, which is the whole point of having
+       it in the model. -->
+  <disable_collisions link1="base_link" link2="workbench" reason="Adjacent"/>
   <disable_collisions link1="link1_base_rotate" link2="link2_upper_arm" reason="Adjacent"/>
   <disable_collisions link1="link2_upper_arm" link2="link3_elbow" reason="Adjacent"/>
   <disable_collisions link1="link3_elbow" link2="link4_forearm" reason="Adjacent"/>
@@ -50,5 +70,32 @@
   <disable_collisions link1="link6_gripper_mount" link2="gripper" reason="Adjacent"/>
   <disable_collisions link1="gripper" link2="jaw1" reason="Adjacent"/>
   <disable_collisions link1="gripper" link2="jaw2" reason="Adjacent"/>
+
+  <!-- ALWAYS-colliding pairs. Measured 2026-08-13 against a live move_group by
+       sampling 600 random configurations through /check_state_validity:
+       **0 of 600 were collision-free**, and these three pairs collided in
+       600/600. A pair that collides in every reachable configuration cannot be
+       avoided by planning - keeping it enabled just makes every state invalid,
+       which is precisely what happened: /compute_ik with avoid_collisions=True
+       failed with error -31 for every target, including the arm's own current
+       pose, and no look pose could ever pass /check_state_validity.
+
+       All three are one-link-apart pairs (link2 -> link3 -> link4, and
+       link4 -> link5 -> link6 -> gripper) whose collision geometry is the mesh
+       BOUNDING BOX rather than the mesh - see the collision note in
+       vision_arm.urdf.xacro, where boxes replaced 278k triangles to get sim RTF
+       off 0.006. A long forearm box necessarily overlaps its neighbours' boxes
+       at every joint angle, so this checking was never meaningful.
+
+       This is the same treatment MoveIt Setup Assistant applies (reason
+       "Always"). Everything genuinely configuration-dependent stays ENABLED -
+       the survey shows link4<->base_link at 49%, link4<->link1 at 71%,
+       gripper<->link1 at 60%, and every link against the workbench, and those
+       are real constraints the planner must respect.
+
+       Re-run the survey if the collision geometry ever changes. -->
+  <disable_collisions link1="link2_upper_arm" link2="link4_forearm" reason="Always"/>
+  <disable_collisions link1="link4_forearm" link2="link6_gripper_mount" reason="Always"/>
+  <disable_collisions link1="link4_forearm" link2="gripper" reason="Always"/>
 
 </robot>

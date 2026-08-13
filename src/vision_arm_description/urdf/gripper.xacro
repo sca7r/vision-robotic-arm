@@ -41,6 +41,7 @@
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0"/>
         <geometry><mesh filename="package://vision_arm_description/meshes/gripper/gripper.STL"/></geometry>
+        <material name="arm_body"/>
       </visual>
       <!-- bbox box instead of the 64k-tri STL - see collision note in
            vision_arm.urdf.xacro; jaws below keep real meshes for grasping -->
@@ -60,6 +61,7 @@
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0"/>
         <geometry><mesh filename="package://vision_arm_description/meshes/gripper/jaw1.STL"/></geometry>
+        <material name="arm_joint"/>
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -87,6 +89,7 @@
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0"/>
         <geometry><mesh filename="package://vision_arm_description/meshes/gripper/jaw2.STL"/></geometry>
+        <material name="arm_joint"/>
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -108,14 +111,6 @@
       <dynamics damping="0.01" friction="0.1"/>
     </joint>
 
-    <!-- Built-in eye-in-hand camera mount molded into the gripper body (visible as
-         the angled wedge above the jaws in docs/assets/MSG_and_camera.png) - not a
-         guess, taken directly from the vendor's MJCF (MSG_gripper_description/
-         msg_gripper.xml, body "camera_center": pos="0 -0.09 0.1", xyaxes="-1 0 0 0 0 1").
-         camera_link keeps that native (MuJoCo) camera-frame convention: +X right,
-         +Y up, +Z out of the lens (view direction -Z). camera_optical_link applies
-         the standard 180-about-X flip to the ROS optical convention (+Z forward
-         into the scene, +X right, +Y down) that vision_msgs/image_geometry expect. -->
     <!-- MoveIt end-effector tip: jaw joints are symmetric about this point
          (both joint_jaw1/2 origins are xyz="0.02835 0 -0.1409" in the gripper
          frame, moving +-Y), so it's the grasp-center point between open jaws. -->
@@ -126,12 +121,73 @@
       <child link="tcp"/>
     </joint>
 
-    <link name="camera_link"/>
+    <!-- Eye-in-hand RealSense D405.
+
+         This pose was DERIVED, not inherited. The previous value (xyz="0 -0.09 0.1",
+         cited from the vendor MJCF body "camera_center") put camera_link 155.0 mm
+         from the nearest vertex of gripper.STL - floating in free space. That was
+         confirmed against all three copies of the mesh (ours, the vendor's URDF mesh,
+         the vendor's MJCF mesh - geometrically identical, 64004 tris each).
+         The MJCF marker is simply wrong: the same file also places
+         <body name="tcp_link" pos="0 -0.22 0">, i.e. 220 mm along the jaw-motion
+         axis, outside a part that spans 159 mm in Y. Do not copy poses from that
+         file without checking them against the mesh.
+
+         Values below are solved against the real geometry and the D405 datasheet
+         (Intel 337029-017). camera_link sits at the DEPTH ORIGIN (centre of the left
+         imager); the D405 derives RGB from that same imager, so colour and depth
+         share this origin and there is no RGB-to-depth extrinsic to calibrate.
+
+         Placement (gripper frame: -Z toward the workspace, +X toward the jaws):
+           xyz = (-0.100, 0, -0.120), pitch -20 deg toward +X
+           -> view axis (+0.342, 0, -0.9397)
+         Verified: camera solid's front-most corner lands at x = -0.0790, exactly the
+         body's rear face (flush, no interpenetration); lowest corner sits 21.2 mm
+         ABOVE the jaw tips, so the jaws always contact the table first; the grasp
+         target stays inside the 84x58 deg FOV at every stand-off from 8 to 30 cm,
+         with the nominal 20 cm look pose at 25.5 cm range and only 10 deg off-axis
+         (mid-band for the 7-50 cm ideal range). Full derivation: description.md 17.4.
+
+         The 20 deg pitch is what puts the grasp region near the optical axis at the
+         working distance; at 0 deg it is still in frame but 30+ deg off-axis, where
+         stereo matching is weakest. Nominal (from CAD) - hand-eye calibration on real
+         hardware is Phase 8. -->
+    <link name="camera_link">
+      <!-- ponytail: visual only, no <collision> and no <inertial>.
+           The camera solid is a 42x42x23 mm box (datasheet 337029-017). Its front
+           glass sits 3.7 mm ahead of the depth origin along the view axis (-Z here),
+           and the body extends 23 mm back from the glass, so the box centre lands at
+           z = (-0.0037 + 0.0193)/2 = +0.0078 in this frame.
+           No collision: the bracket that will actually carry this camera does not
+           exist yet (description.md 18.4), so the camera box alone is not the real
+           swept volume - half-correct collision geometry that blocks planning is
+           worse than none. Add both the camera and the bracket to <collision> once
+           the mount geometry is final.
+           No inertial: 58 g of camera adds 0.28 N*m at joint2_shoulder on a 0.5 m
+           moment arm, against a 50 N*m effort limit. Measured, not assumed - it is
+           dynamically irrelevant, and folding it in properly means recomputing the
+           gripper's combined inertia tensor for no observable gain. Revisit with the
+           real bracket mass. -->
+      <xacro:if value="$(arg camera)">
+        <visual>
+          <origin xyz="0 0 0.0078" rpy="0 0 0"/>
+          <geometry><box size="0.042 0.042 0.023"/></geometry>
+          <material name="arm_joint"/>
+        </visual>
+      </xacro:if>
+    </link>
     <joint name="camera_joint" type="fixed">
-      <origin xyz="0 -0.09 0.1" rpy="1.5707963 0 3.1415927"/>
+      <origin xyz="-0.100 0 -0.120" rpy="0 -0.34907 0"/>
       <parent link="gripper"/>
       <child link="camera_link"/>
     </joint>
+    <!-- camera_link uses the sensor convention Gazebo expects: view direction along
+         its own -Z. camera_optical_link applies the standard 180-about-X flip into
+         the ROS optical convention (+Z forward into the scene, +X right, +Y down)
+         that vision_msgs and image_geometry assume when deprojecting pixels.
+         With the -20 deg pitch above, the optical frame's +X (image width, the wide
+         84 deg axis) lands along gripper +X - the direction that needs the coverage,
+         since the grasp point is offset that way. That is deliberate, not incidental. -->
     <link name="camera_optical_link"/>
     <joint name="camera_optical_joint" type="fixed">
       <origin xyz="0 0 0" rpy="3.14159265 0 0"/>

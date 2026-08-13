@@ -1,6 +1,16 @@
 <?xml version="1.0"?>
 <robot name="vision_arm" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
+  <!-- ponytail: camera defaults OFF - this VM has no GPU and llvmpipe takes
+       >45s per RGBD frame, which lockstep-stalls physics to RTF 0.006 (sim
+       unusable). Enable with xacro arg camera:=true on a GPU box / VBox with
+       3D accel when Phase 5 vision needs it; camera_link TF frames exist
+       either way, so downstream code can be written against them now.
+       Declared HERE, before the gripper macro is expanded below - gripper.xacro
+       reads $(arg camera) to gate the camera's visual, and xacro resolves args
+       in document order, so declaring it further down silently breaks. -->
+  <xacro:arg name="camera" default="false"/>
+
   <xacro:include filename="$(find vision_arm_description)/urdf/gripper.xacro"/>
 
   <!-- Joint limits derived from Software1/Low_Level_Arduino/Robot_Arduino_trajectory/
@@ -25,9 +35,109 @@
        output plausible from a small stepper). -->
   <xacro:property name="eff_limit" value="50.0"/>
 
+  <!-- The base is BOLTED to the work surface: a "world" link plus a fixed
+       world_joint at mount_z. On real hardware the arm is clamped to a bench, so
+       this is also the honest model.
+
+       Why the free-floating base was abandoned: joint1 only turned because the
+       base counter-rotated under it (commanding -0.3 yawed the base +0.181, -0.9
+       yawed it +0.460 - about half the commanded angle is absorbed). That is
+       survivable for perception, which measures cubes in base_link and rides the
+       base with them, but it is fatal for pick and place: the CUBES are bolted to
+       the world, not to the base, so a cube measured at a base_link coordinate is
+       no longer at that coordinate once the base has yawed 26 degrees mid-move.
+
+       mount_z: base_link's collision box underside sits 0.0157 above base_link's
+       origin, so mount_z = (work surface height) - 0.0157 puts the plate exactly
+       on the surface. 0.75 m is the workbench top defined a few lines below; a test
+       in test_urdf.py asserts the two stay in sync.
+
+       An earlier attempt at this weld (2026-08-12) left joint1 DEAD in Gazebo -
+       commanded -1.213, reached 0.0007, while joints 2-6 tracked to 1e-12, and
+       it stayed dead with joint1's effort raised 50 -> 500 N*m, so it was never
+       effort starvation. That is fixed and the weld is now VERIFIED, measured
+       2026-08-13 with tools/weld_check.py: commanding joint1 alone to -0.9
+       reached -0.8978, and a six-joint move to [-0.6, 0.9, 0.6, 0, -0.5, 0]
+       tracked every joint to within 0.003 rad, with `gz model -m vision_arm -p`
+       reporting the model at exactly world identity throughout. The difference
+       is almost certainly base_link's inertial origin, which used to lie outside
+       its own mesh and outside its support polygon (see the note below) - the
+       weld itself converts cleanly to SDF, joint1 keeps the right axis, parent
+       and limits, and self_collide is off.
+
+       Do NOT re-try these, all measured 2026-08-12 and rejected: base mass x100
+       (joint1 dead at 50 N*m; at 500 N*m it tracks but the base still yaws 0.569
+       rad), base mass x1000 (yaw 0 but ~10 mm of creep per move), and mu=1
+       friction on base and ground (changed drift by <1 mm - the slide was
+       contact-solver drift, not Coulomb sliding). -->
+  <xacro:arg name="mount_z" default="0.7343"/>
+
+  <link name="world"/>
+  <joint name="world_joint" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 $(arg mount_z)" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ponytail: the workbench lives HERE, not in the world SDF, so Gazebo and
+       MoveIt get the same geometry from one number. The arm is bolted to this
+       top, so a planner that cannot see it will plan straight through it, and
+       the alternative (an SDF model plus a planning-scene publisher node) is two
+       representations to keep in sync. Welded to world through fixed joints, so
+       its inertia is irrelevant - the 30 kg is a plausible placeholder.
+       Colour is desaturated on purpose: at S=51/255 it sits under the cube
+       detector's saturation floor of 120, so it can never be read as a red cube
+       (a saturated wood brown lands at hue 15, only 5 off the red band). -->
+  <material name="bench_top"><color rgba="0.50 0.45 0.40 1"/></material>
+  <link name="workbench">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="30.0"/>
+      <inertia ixx="3.906" ixy="0" ixz="0" iyy="6.306" iyz="0" izz="7.400"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="1.4 1.0 0.75"/></geometry>
+      <material name="bench_top"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="1.4 1.0 0.75"/></geometry>
+    </collision>
+  </link>
+  <!-- Top at z=0.75, spanning x -0.55..+0.85, y -0.85..+0.15. That contains the
+       whole reachable top-down grasp patch measured by tools/reach_map.py
+       (x -0.31..+0.48, y -0.63..-0.19 in base_link, and base_link is at the
+       world origin in x/y) with room left over, so objects can be placed
+       anywhere the arm can reach without hanging off an edge. -->
+  <joint name="workbench_joint" type="fixed">
+    <parent link="world"/>
+    <child link="workbench"/>
+    <origin xyz="0.15 -0.35 0.375" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Deliberately achromatic. The cube detector thresholds HSV with a
+       saturation floor of 120/255, so any grey the arm is painted is invisible
+       to it and cannot produce false detections; an orange or red arm could.
+       Light and dark alternate link by link so the joints read as outlines
+       rather than one continuous silhouette. -->
+  <!-- sdformat multiplies URDF colour by 1.25 for the SDF diffuse, so anything
+       above 0.8 clamps to pure white in Gazebo. 0.72 lands at 0.9. -->
+  <material name="arm_body"><color rgba="0.70 0.72 0.75 1"/></material>
+  <material name="arm_joint"><color rgba="0.16 0.17 0.19 1"/></material>
+
   <link name="base_link">
     <inertial>
-      <origin xyz="0.0754452420016786 0.0706653851885525 0.174716050606158" rpy="0 0 0"/>
+      <!-- CAD gave xyz="0.0754452 0.0706654 0.1747161", which is OUTSIDE the part:
+           base_link.STL spans y [-0.2967, -0.0427] and z [0.0157, 0.1379], so that
+           centre of mass is 14 cm off the mesh in +y and above its top face. Only x
+           (0.0754 vs the mesh centre 0.0756) is right, so the export lost the y/z
+           frame. It also puts the CoM outside the base's support polygon, so the
+           model tips: with a heavier base it fell onto its side (roll -1.589 rad)
+           within seconds of spawning.
+           Replaced with the collision box centroid: a uniform box is the honest
+           approximation, and it is the same box the physics already contacts. -->
+      <origin xyz="0.0756 -0.1697 0.0768" rpy="0 0 0"/>
       <mass value="1.75590983031249"/>
       <inertia ixx="0.0106901651591523" ixy="1.2533292416581E-05" ixz="-1.78802486116636E-05"
                iyy="0.0121389538778755" iyz="-0.0001726147454493" izz="0.00523087609446992"/>
@@ -35,6 +145,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><mesh filename="package://vision_arm_description/meshes/base_link.STL"/></geometry>
+      <material name="arm_joint"/>
     </visual>
     <!-- Collision = mesh bounding box, not the STL: DART grinding the 120k-tri
          base mesh against the ground plane every 1ms step (and 278k tris total
@@ -57,6 +168,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><mesh filename="package://vision_arm_description/meshes/link1_base_rotate.STL"/></geometry>
+      <material name="arm_body"/>
     </visual>
     <collision>
       <origin xyz="0 -0.127 0.0024" rpy="0 0 0"/>
@@ -81,6 +193,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><mesh filename="package://vision_arm_description/meshes/link2_upper_arm.STL"/></geometry>
+      <material name="arm_joint"/>
     </visual>
     <collision>
       <origin xyz="0.1563 -0.0075 -0.0025" rpy="0 0 0"/>
@@ -111,6 +224,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><mesh filename="package://vision_arm_description/meshes/link3_elbow.STL"/></geometry>
+      <material name="arm_body"/>
     </visual>
     <collision>
       <origin xyz="0.0464 -0.0335 0.0037" rpy="0 0 0"/>
@@ -135,6 +249,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><mesh filename="package://vision_arm_description/meshes/link4_forearm.STL"/></geometry>
+      <material name="arm_joint"/>
     </visual>
     <collision>
       <origin xyz="0.0183 0.1122 0.0576" rpy="0 0 0"/>
@@ -159,6 +274,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><mesh filename="package://vision_arm_description/meshes/link5_wrist.STL"/></geometry>
+      <material name="arm_body"/>
     </visual>
     <collision>
       <origin xyz="0.0013 0.0071 -0.0041" rpy="0 0 0"/>
@@ -183,6 +299,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry><mesh filename="package://vision_arm_description/meshes/link6_gripper_mount.STL"/></geometry>
+      <material name="arm_joint"/>
     </visual>
     <collision>
       <origin xyz="0.0002 0.0007 0.008" rpy="0 0 0"/>
@@ -234,21 +351,43 @@
     </plugin>
   </gazebo>
 
-  <!-- RGBD sensor at camera_link: Gazebo looks along -Z of the sensor's own
-       pose, and camera_link (see gripper.xacro) was built with exactly that
-       convention (view direction = its own -Z), so it's attached with zero
-       extra offset. gz_frame_id points at camera_optical_link (the ROS-optical-
-       convention child frame) since the depth/point-cloud data is inherently
-       expressed in optical axes (x-right, y-down, z-forward-along-view). -->
-  <!-- ponytail: camera defaults OFF - this VM has no GPU and llvmpipe takes
-       >45s per RGBD frame, which lockstep-stalls physics to RTF 0.006 (sim
-       unusable). Enable with xacro arg camera:=true on a GPU box / VBox with
-       3D accel when Phase 5 vision needs it; camera_link TF frames exist
-       either way. -->
-  <xacro:arg name="camera" default="false"/>
+  <!-- RGBD sensor at camera_link.
+
+       The <pose> below is REQUIRED and was verified empirically, not assumed.
+       An SDF camera sensor looks along its own +X (with +Y left, +Z up) - NOT
+       along -Z. A previous comment here claimed Gazebo looks along -Z and
+       attached the sensor with no offset; the result was a camera pointing
+       horizontally forward while camera_optical_link claimed it pointed down.
+       The images were full of gripper and horizon, and any deprojection through
+       TF would have placed detections in completely the wrong part of the world.
+
+       Proven by deprojecting a real depth frame through camera_info and
+       transforming it by each candidate convention, then checking the result
+       against the known scene as it stood then (floor z=0, table top z=0.28;
+       the arm has since been bolted to a 0.75 m workbench, which does not change
+       the conclusion):
+
+         view = camera_link -Z (the old claim) -> 41.0% of points BELOW the floor,
+                                                  0% on floor, 0% on table
+         view = camera_link +X (SDF default)   -> 0% below floor,
+                                                  41.0% on floor, 10.1% on table
+
+       So the sensor frame must be rotated so its +X lands on our intended view
+       direction. Required sensor axes, expressed in camera_link:
+         sensor +X (view) = -Z   (camera_link's view direction)
+         sensor +Y (left) = -X
+         sensor +Z (up)   = +Y
+       which is rpy = (-pi/2, +pi/2, 0). That makes the sensor's optical axis
+       coincide with camera_optical_link's +Z, so gz_frame_id below is finally
+       telling the truth. -->
+  <!-- gz_frame_id points at camera_optical_link (the ROS-optical-convention
+       child frame) since depth/point-cloud data is expressed in optical axes
+       (x-right, y-down, z-forward-along-view). -->
+  <!-- Sensor is gated by the same $(arg camera) declared at the top of this file. -->
   <xacro:if value="$(arg camera)">
   <gazebo reference="camera_link">
     <sensor name="wrist_camera" type="rgbd_camera">
+      <pose>0 0 0 -1.5707963 1.5707963 0</pose>
       <always_on>true</always_on>
       <!-- ponytail: 320x240@5Hz - this machine software-renders (no dGPU) and
            640x480@15Hz tanked RTF; bump back up if/when run on a GPU box -->
@@ -257,14 +396,27 @@
       <topic>camera</topic>
       <gz_frame_id>camera_optical_link</gz_frame_id>
       <camera>
-        <horizontal_fov>1.047</horizontal_fov>
+        <!-- Matched to the real D405 (Intel datasheet 337029-017): depth FOV is
+             H 84 / V 58 deg, so horizontal_fov = 84 deg = 1.4661 rad. Note the
+             datasheet figure is for 16:9; this sensor renders 4:3, from which
+             Gazebo derives vfov ~68 deg rather than the D405's 58 deg. The wider
+             simulated vertical is the conservative direction (sim sees at least as
+             much as hardware), but do not calibrate against it - use the real
+             camera_info once hardware is on. Product pages quoting 87 deg are
+             citing the D435/D455; the D405 is 84. -->
+        <horizontal_fov>1.4661</horizontal_fov>
         <image>
           <width>320</width>
           <height>240</height>
           <format>R8G8B8</format>
         </image>
+        <!-- near = the D405's real 7 cm minimum depth, so the simulated camera goes
+             blind at the same distance the hardware does. That is deliberate: it
+             makes the "look -> decide -> commit" constraint (description.md 11.4)
+             show up in simulation instead of surprising us on hardware. far stays
+             at 3 m; the D405's 50 cm figure is its *ideal* range, not a hard cutoff. -->
         <clip>
-          <near>0.05</near>
+          <near>0.07</near>
           <far>3.0</far>
         </clip>
       </camera>

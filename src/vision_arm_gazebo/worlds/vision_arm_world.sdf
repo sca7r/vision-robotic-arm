@@ -33,55 +33,50 @@
       </link>
     </model>
 
-    <!-- Table: sized/placed so the arm's forward-reach poses land on its top
-         surface (see Phase 3 notes - gripper world position sampled at a few
-         bent-forward joint configs came out around x~0.05-0.15, y~-0.25..-0.4,
-         z~0.27-0.3, so the table top sits at z=0.28). -->
-    <model name="table">
-      <static>true</static>
-      <pose>0.05 -0.4 0.14 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>0.5 0.4 0.28</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>0.5 0.4 0.28</size></box></geometry>
-          <material><ambient>0.55 0.4 0.25 1</ambient><diffuse>0.6 0.45 0.3 1</diffuse></material>
-        </visual>
-      </link>
-    </model>
+    <!-- No workbench model here: it is a link in vision_arm.urdf.xacro, welded
+         to the world alongside base_link, so Gazebo and MoveIt share one
+         definition of the surface the arm is bolted to. Top at z=0.75. -->
 
-    <!-- Three 3cm cubes on the table, within the MSG gripper's ~5.2cm per-jaw
-         stroke (10.4cm max opening), spaced so they don't touch. -->
+    <!-- Three 5 cm cubes in a row on the workbench top (z = 0.75 + 0.025).
+         Deliberately an easy scene: side by side, 12 cm apart, all at the same
+         y, so one camera pose frames all three and the arm never has to sweep
+         to find them. A real cell would be laid out this way too - you position
+         the robot so the parts land in its sweet spot. Add clutter later.
+         5 cm fits the MSG gripper's 10.4 cm maximum opening with 2.7 cm of
+         margin per jaw, leaves 7 cm of clear air between neighbours, and is
+         several hundred pixels at grasp range (the old 3 cm ones were ~120).
+         The row sits at radius 0.44 m, inside the reachable top-down patch from
+         tools/reach_map.py, and 10 cm clear of the base plate, which reaches
+         out to y=-0.30. -->
     <model name="cube_red">
-      <pose>-0.05 -0.45 0.295 0 0 0</pose>
+      <pose>-0.12 -0.425 0.775 0 0 0</pose>
       <link name="link">
-        <inertial><mass>0.02</mass><inertia><ixx>3e-6</ixx><iyy>3e-6</iyy><izz>3e-6</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
-        <collision name="collision"><geometry><box><size>0.03 0.03 0.03</size></box></geometry></collision>
+        <inertial><mass>0.09</mass><inertia><ixx>3.75e-5</ixx><iyy>3.75e-5</iyy><izz>3.75e-5</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+        <collision name="collision"><geometry><box><size>0.05 0.05 0.05</size></box></geometry></collision>
         <visual name="visual">
-          <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
+          <geometry><box><size>0.05 0.05 0.05</size></box></geometry>
           <material><ambient>0.8 0.1 0.1 1</ambient><diffuse>0.9 0.1 0.1 1</diffuse></material>
         </visual>
       </link>
     </model>
     <model name="cube_green">
-      <pose>0.05 -0.4 0.295 0 0 0</pose>
+      <pose>0.0 -0.425 0.775 0 0 0</pose>
       <link name="link">
-        <inertial><mass>0.02</mass><inertia><ixx>3e-6</ixx><iyy>3e-6</iyy><izz>3e-6</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
-        <collision name="collision"><geometry><box><size>0.03 0.03 0.03</size></box></geometry></collision>
+        <inertial><mass>0.09</mass><inertia><ixx>3.75e-5</ixx><iyy>3.75e-5</iyy><izz>3.75e-5</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+        <collision name="collision"><geometry><box><size>0.05 0.05 0.05</size></box></geometry></collision>
         <visual name="visual">
-          <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
+          <geometry><box><size>0.05 0.05 0.05</size></box></geometry>
           <material><ambient>0.1 0.8 0.1 1</ambient><diffuse>0.1 0.9 0.1 1</diffuse></material>
         </visual>
       </link>
     </model>
     <model name="cube_blue">
-      <pose>0.15 -0.35 0.295 0 0 0</pose>
+      <pose>0.12 -0.425 0.775 0 0 0</pose>
       <link name="link">
-        <inertial><mass>0.02</mass><inertia><ixx>3e-6</ixx><iyy>3e-6</iyy><izz>3e-6</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
-        <collision name="collision"><geometry><box><size>0.03 0.03 0.03</size></box></geometry></collision>
+        <inertial><mass>0.09</mass><inertia><ixx>3.75e-5</ixx><iyy>3.75e-5</iyy><izz>3.75e-5</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia></inertial>
+        <collision name="collision"><geometry><box><size>0.05 0.05 0.05</size></box></geometry></collision>
         <visual name="visual">
-          <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
+          <geometry><box><size>0.05 0.05 0.05</size></box></geometry>
           <material><ambient>0.1 0.1 0.8 1</ambient><diffuse>0.1 0.1 0.9 1</diffuse></material>
         </visual>
       </link>

@@ -32,11 +32,28 @@ def generate_launch_description():
     # step, tanking RTF to ~0.006 even for an empty world. Forcing Mesa's
     # surfaceless software path restores RTF ~1.0. Harmless on a real GPU box
     # but remove these two if you ever want hardware rendering.
-    egl_surfaceless = SetEnvironmentVariable(name="EGL_PLATFORM", value="surfaceless")
-    software_gl = SetEnvironmentVariable(name="LIBGL_ALWAYS_SOFTWARE", value="1")
+    # ...and ONLY when headless. With the GUI up, these two kill it on this box:
+    # the gz GUI picks a hardware device through EGL, then libEGL refuses with
+    # "Not allowed to force software rendering when API explicitly selects a
+    # hardware device" and gz sim exits ~10 s in, taking the whole launch (and
+    # every controller spawner) with it.
+    egl_surfaceless = SetEnvironmentVariable(
+        name="EGL_PLATFORM", value="surfaceless",
+        condition=IfCondition(LaunchConfiguration("headless")))
+    software_gl = SetEnvironmentVariable(
+        name="LIBGL_ALWAYS_SOFTWARE", value="1",
+        condition=IfCondition(LaunchConfiguration("headless")))
+
+    # camera:=true enables the wrist D405 (solid + simulated RGBD sensor). Default
+    # off: software rendering on this GPU-less box takes >45 s/frame and lockstep-
+    # stalls physics. Needed for Phase 5 rosbag capture on a GPU host.
+    camera_arg = DeclareLaunchArgument("camera", default_value="false")
 
     robot_description = {
-        "robot_description": ParameterValue(Command(["xacro ", xacro_path]), value_type=str)
+        "robot_description": ParameterValue(
+            Command(["xacro ", xacro_path, " camera:=", LaunchConfiguration("camera")]),
+            value_type=str,
+        )
     }
 
     # headless:=true runs the server only (-s) - closing the GUI window
@@ -67,7 +84,11 @@ def generate_launch_description():
     spawn_robot = Node(
         package="ros_gz_sim",
         executable="create",
-        arguments=["-topic", "robot_description", "-name", "vision_arm", "-z", "0.01"],
+        # No -z: the model is welded to the world at mount_z inside the URDF
+        # (world_joint), so it spawns at the origin and the weld carries the
+        # height onto the workbench top. Spawning it with an offset would double
+        # up with the weld.
+        arguments=["-topic", "robot_description", "-name", "vision_arm"],
         output="screen",
     )
 
@@ -128,10 +149,14 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # Args first: the two GL variables below are conditioned on `headless`,
+        # and launch evaluates entities in order, so declaring it later would
+        # make that condition read an undeclared configuration.
+        camera_arg,
+        headless_arg,
         egl_surfaceless,
         software_gl,
         gz_resource_path,
-        headless_arg,
         gz_sim,
         gz_sim_headless,
         robot_state_publisher,
