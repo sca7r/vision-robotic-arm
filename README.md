@@ -85,6 +85,117 @@ A full cycle takes about 60 seconds of simulated time. The arm starts at home, m
 above the cube, descends straight down, closes the jaws, lifts, carries, lowers, releases,
 and returns home.
 
+## Telling the Robot What to Do
+
+### Anatomy of the command
+
+```
+ros2 topic pub  --once  /task/command  std_msgs/String  "data: 'blue 0.05 -0.55'"
+```
+
+| Part | What it is |
+|---|---|
+| `ros2 topic pub` | Publishes a message onto a topic, which is ROS 2's broadcast channel |
+| `--once` | Send a single message and exit. Without it the command republishes at 1 Hz forever and the arm repeats the same job |
+| `/task/command` | The topic `task_server.py` is listening on |
+| `std_msgs/String` | The message type. It has to match what the node expects |
+| `"data: 'blue 0.05 -0.55'"` | The message itself, written as YAML. `String` has one field called `data`. The outer quotes are for your shell, the inner ones keep the value as a single string |
+
+Only the text inside the inner quotes changes from one command to the next. Everything
+else stays identical.
+
+### The two command forms
+
+```
+'<colour> <place>'      e.g.  'red left'          a named destination
+'<colour> <x> <y>'      e.g.  'red 0.15 -0.40'    explicit coordinates
+```
+
+Colours are `red`, `green` and `blue`. Named places are defined in
+`src/vision_arm_tasks/config/poses.yaml` and are currently `left`, `right` and `front`.
+
+### Coordinates
+
+`x` and `y` are metres in `base_link`, the frame sitting at the arm's base.
+
+- **x** runs left and right across the bench. Negative is left, positive is right, and 0 is
+  straight ahead.
+- **y** is distance out from the robot. It is always **negative**, because the workspace is
+  in front of the base. Something at `-0.30` is close in, something at `-0.55` is far out.
+- There is no **z**. Objects are placed on the bench, at the height they were picked from.
+
+Usable range, taken from the measured reach map rather than guessed: x from about -0.31 to
++0.48, y from about -0.19 to -0.63. Stay a little inside those edges, and do not ask for
+anything closer than roughly y = -0.32, because that is where the arm's own base plate is.
+
+### The bench, to scale
+
+One character is 2.5 cm. `R`, `G` and `B` are the three cubes in their starting positions,
+and `o` marks each named place.
+
+```
+  +---------------------------------------------------------+  y = +0.15   near edge of the bench
+  |                    [ROBOT]                              |  y =  0.00   base_link origin, x = 0, y = 0
+  |                      #######                            |              base plate footprint
+  |                                                         |
+  |          ................................               |  y = -0.19   near edge of reach
+  |          .                              .               |
+  |          .   o  R    G    B  o          .               |  y = -0.42   cubes R G B, places 'left' and 'right'
+  |          .                              .               |
+  |          .           o                  .               |  y = -0.55   place 'front'
+  |          ................................               |  y = -0.63   far edge of reach
+  |                                                         |
+  +---------------------------------------------------------+  y = -0.85   far edge of the bench
+         |       |       |       |       |       |       |
+        -0.4    -0.2    +0.0    +0.2    +0.4    +0.6    +0.8   x in metres
+```
+
+The dotted rectangle is where a straight down grasp is geometrically possible. Outside it,
+the arm either cannot reach or cannot get the gripper vertical, and the command comes back
+as a failure without the arm moving.
+
+### Adding your own named places
+
+Easier than retyping coordinates. Edit `src/vision_arm_tasks/config/poses.yaml`:
+
+```yaml
+places:
+  left: [-0.20, -0.42]
+  right: [0.20, -0.42]
+  front: [0.00, -0.55]
+  bin: [0.30, -0.50]        # a new one
+```
+
+Rebuild with `colcon build --symlink-install`, restart the task server, and `'red bin'`
+works. A misspelled name is rejected along with the list of valid ones, rather than being
+turned into a motion.
+
+To point the node at an entirely different set of poses without touching the installed
+file:
+
+```bash
+ros2 run vision_arm_tasks task_server.py --ros-args -p poses_file:=/path/to/other.yaml
+```
+
+### Reading the reply
+
+```bash
+ros2 topic echo /task/result
+```
+
+There are three kinds of reply:
+
+```
+picking red at (-0.120, -0.425, 0.041) -> (-0.200, -0.420)
+done: red is at (-0.198, -0.422), 3 mm from target
+failed: unknown place 'lft', known: ['front', 'left', 'right']
+```
+
+The `done` line reports where the cube **actually** ended up, re-detected from the home
+pose after the move, not where the arm was asked to put it. If those disagree by more than
+`place_tolerance` you get a `failed` line instead, which is how a grasp that closed on
+nothing gets caught.
+
 ## How It Works
 
 ### The cycle

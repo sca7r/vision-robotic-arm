@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Pick a coloured cube and place it somewhere. One node, one cycle:
+"""
+Pick a coloured cube and place it somewhere.
+
+One node, one cycle:
 
     home -> detect -> approach -> grasp -> lift -> carry -> release -> home
 
@@ -42,9 +45,11 @@ JAWS = ["joint_jaw1", "joint_jaw2"]
 
 
 def parse_command(text, places):
-    """'red left' or 'red 0.1 -0.42' -> ('red', (x, y)). Raises ValueError.
+    """
+    Turn a command string into a colour and an x/y destination.
 
-    Both forms are supported on purpose: a named spot for a person talking, and
+    Accepts "red left" or "red 0.1 -0.42", and raises ValueError on anything
+    else. Both forms exist on purpose: a named spot for a person talking, and
     explicit coordinates for anything generating them.
     """
     parts = text.strip().lower().split()
@@ -112,7 +117,8 @@ class TaskServer(Node):
     # --- primitives ----------------------------------------------------------
 
     def solve_ik(self, xyz, jaws):
-        """Joint angles putting the TCP at xyz, jaws pointing straight down.
+        """
+        Find joint angles putting the TCP at xyz, jaws pointing straight down.
 
         `jaws` is the jaw position the arm will be HOLDING when it makes this
         move, and it matters: collision checking with the jaws open validates a
