@@ -1,4 +1,5 @@
 import importlib.util
+import math
 from pathlib import Path
 
 import pytest
@@ -37,3 +38,48 @@ def test_case_and_whitespace_are_ignored():
 def test_bad_commands_raise(text):
     with pytest.raises(ValueError):
         parse_command(text, PLACES)
+
+
+# --- grasp orientation -------------------------------------------------------
+
+grasp_quaternion = task_server.grasp_quaternion
+
+
+def rotate(q, v):
+    """Apply quaternion q (x, y, z, w) to vector v."""
+    x, y, z, w = q
+    vx, vy, vz = v
+    tx, ty, tz = 2 * (y * vz - z * vy), 2 * (z * vx - x * vz), 2 * (x * vy - y * vx)
+    return (vx + w * tx + (y * tz - z * ty),
+            vy + w * ty + (z * tx - x * tz),
+            vz + w * tz + (x * ty - y * tx))
+
+
+@pytest.mark.parametrize("yaw", [0.0, math.pi / 2, math.pi, -math.pi / 2])
+def test_no_tilt_is_the_old_top_down_quaternion(yaw):
+    """Straight down must be untouched: it is what the vast majority of grasps use."""
+    x, y, z, w = grasp_quaternion(yaw, 0.0)
+    assert x == pytest.approx(0.0) and y == pytest.approx(0.0)
+    assert z == pytest.approx(math.sin(yaw / 2))
+    assert w == pytest.approx(math.cos(yaw / 2))
+
+
+@pytest.mark.parametrize("yaw", [0.0, math.pi / 3, -math.pi / 2])
+@pytest.mark.parametrize("pitch", [0.0, math.radians(20), math.radians(50)])
+def test_tool_axis_matches_the_standoff_offset(yaw, pitch):
+    """plan_pick backs off along the tool axis, so the two must agree exactly.
+
+    If they drift apart the arm approaches along one line and grasps along
+    another, which looks like a mysterious grazing failure rather than a bug.
+    """
+    got = rotate(grasp_quaternion(yaw, pitch), (0.0, 0.0, -1.0))
+    want = (-math.sin(pitch) * math.cos(yaw),
+            -math.sin(pitch) * math.sin(yaw),
+            -math.cos(pitch))
+    assert got == pytest.approx(want, abs=1e-9)
+
+
+@pytest.mark.parametrize("pitch", [0.0, math.radians(20), math.radians(35), math.radians(50)])
+def test_tilt_is_the_angle_off_vertical(pitch):
+    down = rotate(grasp_quaternion(0.0, pitch), (0.0, 0.0, -1.0))
+    assert math.acos(-down[2]) == pytest.approx(pitch, abs=1e-9)

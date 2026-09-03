@@ -296,6 +296,79 @@ moves as a real pick. After returning home the node re-detects the object and co
 position against the requested destination. This is not hypothetical: the first full run
 reported three successes when one cube had never left its starting position.
 
+## Learning the Grasp Correction
+
+### The problem it solves
+
+The arm computes where to reach from where the camera says the cube is. That calculation
+inherits every millimetre of error in the camera to base transform, and on real hardware
+that transform is never exact. A fixed 5 mm offset is the difference between closing the
+jaws on a cube and knocking it across the bench, and no amount of care in the motion
+planner helps, because the planner is faithfully reaching for the wrong point.
+
+The correction cannot be calibrated away once and forgotten either. It drifts when the
+camera is bumped, when the mount flexes, when the arm is re-assembled.
+
+### What is learned
+
+Three numbers: an offset in x, y and z applied to the grasp point, each clipped to 15 mm.
+The policy is a small multilayer perceptron that reads the detected cube position and
+outputs that offset. Nothing else in the pipeline changes.
+
+One grasp attempt is one action followed immediately by its reward, with no state carried
+between attempts, so this is a contextual bandit rather than a policy with a planning
+horizon, and it is trained as one. That is a deliberate choice of the smallest formulation
+that fits: an attempt costs the better part of a minute of simulated execution, which
+affords a few thousand samples and not the hundreds of thousands a step by step controller
+would need. Soft actor critic is used for its sample efficiency, which is the only property
+that matters at that price per sample.
+
+### Why this is safe
+
+The correction arrives on `/grasp_residual` as three floats, and `task_server` clips them
+to the envelope before use. The clip lives there rather than in whatever publishes, because
+a policy that is undertrained, mid-training, or simply wrong is exactly the case it has to
+hold for. MoveIt still plans and collision checks the corrected pose. Within 15 mm the
+worst a bad correction can do is miss the cube, which is a failure the scripted grasp
+already has.
+
+Nothing publishes to that topic unless the policy node is running, so the default
+behaviour of the system is the scripted grasp, unchanged.
+
+The same topic is what the training environment drives. Training and deployment therefore
+exercise one code path rather than two that can drift apart.
+
+### The workflow
+
+```bash
+# 1. Measure what the scripted grasp already does. This is the gate: if it rarely
+#    fails there is nothing to learn, and eval.py says so.
+python3 -m vision_arm_rl.eval --trials 60 --out baseline.csv
+
+# 2. Give it something to learn. In simulation the detections are ground truth, so
+#    the aim is already perfect; this injects the calibration error real hardware has.
+python3 tools/fake_detections.py --cubes red --bias-seed 3 --noise 0.002
+
+# 3. Train. No GPU: at one action per grasp the wall clock goes on the simulator,
+#    not on gradients.
+python3 -m vision_arm_rl.train --steps 2000 --out models/residual.zip
+
+# 4. Score it against the baseline, same seed so the placements are identical.
+python3 -m vision_arm_rl.eval --trials 60 --model models/residual.zip --out policy.csv
+
+# 5. Deploy, if and only if step 4 beat step 1.
+ros2 run vision_arm_rl policy_node --ros-args -p model:=models/residual.zip
+```
+
+Steps 1 and 4 run the same code with and without a checkpoint, so the before and after
+numbers are comparable by construction rather than by hope.
+
+### Status
+
+Built and tested, not yet trained. The baseline has been measured and the failure modes
+sorted by cause, which is what decides whether training is worth the hours it costs. See
+Known Limitations.
+
 ## System Architecture
 
 One ROS 2 package per concern. Layers communicate only through standard ROS 2 interfaces,
@@ -426,6 +499,10 @@ One node, `task_server.py`, running the pick and place cycle.
 The learning layer, and the only package here that trains a neural network. It does not
 replace MoveIt, it corrects the pose MoveIt is asked to reach.
 
+It also owns the measurement rig, which matters more than it sounds: `eval.py` scores the
+scripted grasp and the learned one through exactly the same code, so the before and after
+numbers are comparable by construction rather than by hope.
+
 The scripted grasp computes a nominal grasp pose from the detected object. On real hardware
 that pose is systematically wrong, because camera to base calibration is never exact, and a
 fixed offset of a few millimetres is enough to turn a grasp into a nudge. This package learns
@@ -443,7 +520,9 @@ thousands a step by step control policy would need.
 |---|---|
 | `residual_env.py` | Gymnasium environment wrapping the live stack, one grasp per step |
 | `train.py` | Soft actor critic from Stable Baselines3, horizon 1 |
-| `eval.py` | Paired success rate, learned residual against the scripted baseline |
+| `eval.py` | Success rate, with a checkpoint or without one |
+| `bench.py` | One attempt at a time against the live stack: place a cube, reset the arm, grade the result |
+| `policy_node.py` | Publishes corrections from a checkpoint at run time |
 | `models/` | Trained checkpoint |
 
 The correction is clipped to 15 mm and 10 degrees, so the policy cannot ask for a pose far
@@ -546,6 +625,34 @@ Everything genuinely configuration dependent stays enabled, including `link4` ag
 base at 49 percent, `link4` against `link1` at 71 percent, and every link against the
 workbench. If collision geometry ever changes, re-run that survey before trusting anything.
 
+### The usable workspace is smaller than the geometry suggests
+
+`tools/reach_map.py` reports top down grasps as geometrically possible from radius 0.21 to
+0.65 m. That number ignores two things that decide it in practice: self collision, and
+whether KDL actually finds the solution. Scoring 60 randomised placements across the
+geometric range gave, by distance from the base:
+
+| Radius | Success |
+|---|---|
+| 0.25 to 0.40 m | 2/6 |
+| 0.40 to 0.48 m | 22/28 |
+| 0.48 to 0.56 m | 13/23 |
+| 0.56 to 0.65 m | 2/3 |
+
+Close in is where it collapses, and the reason is in the next note: a straight down grasp
+at 0.35 m has to fold the arm back over itself. The measured working envelope is 0.40 to
+0.56 m, and that is what `vision_arm_rl/bench.py` samples.
+
+### Every grasp is straight down, and that is a choice, not a limit
+
+`solve_ik` builds the target orientation from a yaw angle alone, so the jaws always point
+at the bench and the only freedom is the spin about the vertical. The wrist is not the
+constraint: joint5 has 213 degrees of travel, joint4 has 304, joint6 has 361. The request
+is the constraint.
+
+This costs reach. A cube that cannot be taken from directly above may be easy to take at
+an angle, which is most of why the close in band fails.
+
 ### Other notes
 
 - **Joint limits come from firmware, not guesswork.** The original model declared every
@@ -584,7 +691,7 @@ Not a ROS package and not built. Run with the workspace sourced.
 | `tools/reach_map.py <urdf> [n] [cube]` | nothing | Where a top down grasp is possible, per mount height |
 | `tools/find_look_pose.py <urdf>` | sim and `move_group` | Searches for a look pose passing all three filters |
 | `tools/weld_check.py [q1 or q1,..,q6]` | sim | Commands one trajectory, prints what each joint reached and where the base ended up |
-| `tools/fake_detections.py` | sim | Publishes `/detections` from Gazebo ground truth, so motion can be tested without the camera |
+| `tools/fake_detections.py` | sim | Publishes `/detections` and `/ground_truth` from Gazebo's pose stream, so motion can be tested without the camera. `--bias-seed N --noise M` makes it lie the way a miscalibrated camera does |
 | `tools/check_accuracy.py [seconds]` | sim and perception | Compares `/detections` against ground truth |
 | `tools/sweep.py` | sim and perception | Sweeps joint 1 and shows the world model accumulating views |
 
