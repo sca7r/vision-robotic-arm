@@ -13,6 +13,10 @@ whole stack from the URDF upwards: model, simulation, control, motion planning,
 perception, and task sequencing. Every layer is written so that the same code drives the
 real hardware once a `ros2_control` hardware interface is added underneath it.
 
+A reinforcement learning layer sits on top of that stack. A small policy learns a bounded
+correction to the grasp pose the motion planner is asked to reach, so that the arm
+compensates for the camera to base calibration error that real hardware always has.
+
 ## Status
 
 | Capability | State |
@@ -24,7 +28,8 @@ real hardware once a `ros2_control` hardware interface is added underneath it.
 | RGB-D cube detection in `base_link` | Working, accuracy measured at 1.5 to 2.4 mm |
 | Pick and place cycle | Working, placement accuracy 1 to 5 mm |
 | Camera to grasp in one loop | Not yet run end to end, see Known Limitations |
-| Natural language commands | Not started, next milestone |
+| Learned grasp residual, reinforcement learning | Not yet trained |
+| Natural language commands | Not started |
 | Real hardware | Not started |
 
 Test counts by package: description 9, gazebo 3, moveit_config 4, perception 4,
@@ -298,6 +303,9 @@ so each can be developed, tested, and replaced independently.
 
 ```
 +---------------------------------------------------------------------+
+|  vision_arm_rl                                                      |
+|  learned residual on the grasp pose, trained against the simulator  |
++---------------------------------------------------------------------+
 |  vision_arm_tasks                                                   |
 |  home -> detect -> grasp -> place -> home, driven by string commands|
 +---------------------------------------------------------------------+
@@ -328,6 +336,11 @@ so each can be developed, tested, and replaced independently.
   interfaces.
 - **Configuration over code.** Home pose, named destinations, gripper positions,
   tolerances, HSV bands and controller gains all live in YAML.
+- **Learning is additive, not a replacement.** The learned grasp residual is bounded and
+  clipped, and MoveIt still plans and collision checks the corrected pose. If the policy is
+  switched off, or its correction fails inverse kinematics, the task layer falls back to the
+  scripted grasp pose. The worst case of an untrained policy is the behaviour the system
+  already has.
 - **Verify, do not assume.** Every claim in this README that has a number attached to it
   was measured against Gazebo ground truth, and the tools that measured it are in `tools/`.
 
@@ -407,6 +420,39 @@ One node, `task_server.py`, running the pick and place cycle.
   or progress feedback yet, and a string is exactly what the planned language layer will
   publish. Swapping in an action later touches one node.
 - All configuration lives in `config/poses.yaml`, selected with `-p poses_file:=...`.
+
+### vision_arm_rl
+
+The learning layer, and the only package here that trains a neural network. It does not
+replace MoveIt, it corrects the pose MoveIt is asked to reach.
+
+The scripted grasp computes a nominal grasp pose from the detected object. On real hardware
+that pose is systematically wrong, because camera to base calibration is never exact, and a
+fixed offset of a few millimetres is enough to turn a grasp into a nudge. This package learns
+that correction. A small multilayer perceptron reads the detected object pose and the nominal
+grasp pose, and outputs a bounded offset in x, y, z and yaw which is added to the grasp pose
+before it is sent to inverse kinematics.
+
+One grasp attempt is one action followed immediately by its reward, so this is a contextual
+bandit rather than a policy with a planning horizon, and it is trained as one. That is a
+deliberate choice of the smallest formulation that fits the problem. An episode costs a few
+seconds of simulated execution, which affords a few thousand attempts and not the hundreds of
+thousands a step by step control policy would need.
+
+| Piece | What it is |
+|---|---|
+| `residual_env.py` | Gymnasium environment wrapping the live stack, one grasp per step |
+| `train.py` | Soft actor critic from Stable Baselines3, horizon 1 |
+| `eval.py` | Paired success rate, learned residual against the scripted baseline |
+| `models/` | Trained checkpoint |
+
+The correction is clipped to 15 mm and 10 degrees, so the policy cannot ask for a pose far
+from the one the scripted system would have used. Training runs headless against Gazebo on
+CPU. No GPU is involved, because at one action per grasp the cost is simulator time rather
+than gradient time.
+
+Full design in
+[`docs/superpowers/specs/2026-09-03-residual-rl-grasp-design.md`](docs/superpowers/specs/2026-09-03-residual-rl-grasp-design.md).
 
 ## Configuration
 
@@ -571,8 +617,10 @@ vision-robotic-arm/
     vision_arm_moveit_config/  SRDF, kinematics, joint limits, MoveIt launches
     vision_arm_perception/     cube_detector node, HSV config, perception launch
     vision_arm_tasks/          task_server node, poses and places config
+    vision_arm_rl/             residual policy env, training and evaluation scripts
   tools/                       development and measurement scripts
   docs/images/                 README media
+  docs/superpowers/specs/      design documents
   LICENSE
 ```
 
@@ -598,22 +646,31 @@ Stated plainly, because a README that only lists successes is not much use.
 - **Grasping is position controlled and open loop.** The jaws are commanded to a fixed
   position and the result is checked afterwards by looking at the object again. There is no
   force feedback and no grasp quality estimation.
+- **The grasp residual is not trained yet.** The baseline it has to beat has not been
+  measured, so there is no evidence yet that the scripted grasp fails often enough in
+  simulation for a learned correction to have anything to learn. Measuring that is the first
+  phase of the work. The policy stays disabled by default until a paired evaluation shows it
+  beating the scripted grasp.
 - **No real hardware.** Everything here is simulation.
 
 ## Roadmap
 
-1. **Natural language commands.** A node turning "pick the red cube and put it on the left"
+1. **A learned grasp residual.** Measure the scripted grasp's baseline success rate over
+   randomised object placements, inject the camera to base calibration error that real
+   hardware will have, then train a bounded correction to the grasp pose against it. Kept
+   behind a parameter that stays off until a paired evaluation shows it winning.
+2. **Natural language commands.** A node turning "pick the red cube and put it on the left"
    into the strings the task server already accepts. A regular expression pass first, then
    a local Ollama model for anything the pattern misses. Both publish to `/task/command`,
    so neither touches the motion code.
-2. **One end to end run on a GPU machine**, closing the camera to grasp loop and
+3. **One end to end run on a GPU machine**, closing the camera to grasp loop and
    re-measuring perception accuracy in the current scene.
-3. **A bringup package**, one top level launch composing simulation, perception, planning
+4. **A bringup package**, one top level launch composing simulation, perception, planning
    and tasks.
-4. **Continuous integration**, building all packages and running `colcon test` on push.
-5. **Increasing scene complexity**, one variable at a time: objects closer together, then
+5. **Continuous integration**, building all packages and running `colcon test` on push.
+6. **Increasing scene complexity**, one variable at a time: objects closer together, then
    varied sizes, then orientations that require solving for the grasp angle.
-6. **Real hardware.** A `ros2_control` hardware interface for the arm's serial stepper
+7. **Real hardware.** A `ros2_control` hardware interface for the arm's serial stepper
    controller and the gripper, an RGB-D camera driver, and hand eye calibration. The
    planning and task layers above run unchanged.
 
