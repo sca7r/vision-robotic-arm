@@ -35,7 +35,7 @@ def test_all_mesh_files_exist():
             mesh = getattr(getattr(geom_holder, "geometry", None), "filename", None)
             if mesh is None:
                 continue
-            relative = mesh.split("vision_arm_description/", 1)[1]
+            relative = mesh.split(f"vision_arm_description/", 1)[1]
             assert (PKG_SHARE / relative).is_file(), mesh
 
 

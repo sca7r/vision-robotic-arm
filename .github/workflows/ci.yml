@@ -13,18 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install ROS dependencies
+      - name: Install dependencies
         run: |
           apt-get update
           rosdep update
           rosdep install --from-paths src --ignore-src -r -y
-
-      # gymnasium is not packaged for rosdep. Only the environment wrapper needs
-      # it; stable_baselines3 and torch are deliberately left out, because
-      # nothing under test imports them and pulling torch into CI costs minutes
-      # for no coverage.
-      - name: Install Python dependencies
-        run: pip install --break-system-packages gymnasium
 
       - name: Build
         shell: bash

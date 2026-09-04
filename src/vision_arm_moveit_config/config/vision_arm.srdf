@@ -98,20 +98,4 @@
   <disable_collisions link1="link4_forearm" link2="link6_gripper_mount" reason="Always"/>
   <disable_collisions link1="link4_forearm" link2="gripper" reason="Always"/>
 
-  <!-- The jaws, for the same reason as the gripper body they hang off. Closing
-       the jaws swings their meshes about 3 cm into link4_forearm's collision
-       box, and that box is a bounding box around a thin forearm, so the contact
-       is with the approximation rather than with the arm. Leaving these two
-       pairs in cost a measured 5 failures in 60: every one was "lift: motion
-       failed (-10)", the planner refusing to move because it believed the arm
-       was already inside itself the moment the jaws closed on a cube.
-
-       This is the same trade already made three times above, and it has the
-       same upgrade path: convex hull collision meshes for these links instead
-       of bounding boxes, at a cost in planning and simulation speed. Until
-       then MoveIt cannot catch a jaw genuinely striking the forearm at an
-       extreme wrist angle. -->
-  <disable_collisions link1="link4_forearm" link2="jaw1" reason="Approximation"/>
-  <disable_collisions link1="link4_forearm" link2="jaw2" reason="Approximation"/>
-
 </robot>

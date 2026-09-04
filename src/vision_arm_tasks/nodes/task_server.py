@@ -43,59 +43,6 @@ ARM = ["joint1_base_rotate", "joint2_shoulder", "joint3_elbow",
        "joint4_forearm", "joint5_wrist", "joint6_gripper_mount"]
 JAWS = ["joint_jaw1", "joint_jaw2"]
 
-# How far a published correction may move the grasp point, in metres per axis.
-# This is a trust boundary: /grasp_residual comes from a learned policy that can
-# be undertrained, mid-training, or simply wrong, so the clip is enforced here
-# rather than in whatever is publishing. Within this envelope the worst a bad
-# correction can do is miss the cube, which is the failure the scripted grasp
-# already has. MoveIt still collision-checks the corrected pose.
-RESIDUAL_LIMIT = 0.015
-
-# A cube is square, so the spin of the jaws about the approach axis is free.
-TOP_DOWN_YAWS = [0.0, math.pi / 2, math.pi, -math.pi / 2]
-
-# Tilted grasps, tried only when straight down finds nothing, best first.
-#
-# 90 comes before the intermediates because of the shape of the object. The jaws
-# close along the tool Y axis and pitch turns about that same axis, so the jaw
-# opening direction stays horizontal at every tilt. Straight down therefore puts
-# the flat plates on two opposite vertical faces of a cube, and straight
-# sideways does the same thing from the side: both are flat contact. The angles
-# in between are the awkward ones, where the plates still meet the face but the
-# finger geometry leans into the bench and pushes the cube out as it closes. A
-# measured tilted grasp at 35 degrees found a reachable pose, flew it, and
-# reported "the grasp slipped or closed on nothing".
-#
-# Intermediates are kept as a last resort, because a pose that is reachable and
-# grips badly still beats no pose at all.
-TILTS = [math.radians(a) for a in (90, 60, 30)]
-TILT_YAWS = [math.radians(a) for a in range(0, 360, 45)]
-
-
-def clip_residual(values):
-    """Three finite numbers clamped to the envelope, or None if the message is junk.
-
-    Anything that is not three finite numbers is dropped rather than partially
-    applied: a half-read correction is worse than none.
-    """
-    values = list(values)
-    if len(values) != 3 or not all(math.isfinite(v) for v in values):
-        return None
-    return tuple(max(-RESIDUAL_LIMIT, min(RESIDUAL_LIMIT, float(v))) for v in values)
-
-
-def grasp_quaternion(yaw, pitch):
-    """Yaw about base Z, then pitch away from straight down. As x, y, z, w.
-
-    The TCP frame is axis aligned with the gripper and the jaws hang along its
-    own -Z (see gripper.xacro), so the identity rotation points the jaws at the
-    bench. That is why pitch 0 reduces to (0, 0, sin(yaw/2), cos(yaw/2)), which
-    is exactly the top down quaternion this used to be able to build.
-    """
-    cz, sz = math.cos(yaw / 2), math.sin(yaw / 2)
-    cy, sy = math.cos(pitch / 2), math.sin(pitch / 2)
-    return (-sz * sy, cz * sy, sz * cy, cz * cy)
-
 
 def parse_command(text, places):
     """
@@ -133,14 +80,11 @@ class TaskServer(Node):
             self.cfg = yaml.safe_load(handle)
 
         self.cubes = {}
-        self.residual = (0.0, 0.0, 0.0)
         self.pending = None
         self.joints = None
         self.create_subscription(JointState, "/joint_states", self._on_joints, 10)
         self.create_subscription(Detection3DArray, "/detections", self._on_detections, 10)
         self.create_subscription(String, "/task/command", self._on_command, 10)
-        self.create_subscription(
-            Float64MultiArray, "/grasp_residual", self._on_residual, 10)
         self.result = self.create_publisher(String, "/task/result", 10)
         self.jaws = self.create_publisher(Float64MultiArray, "/gripper_controller/commands", 10)
 
@@ -161,13 +105,6 @@ class TaskServer(Node):
             p = d.results[0].pose.pose.position
             self.cubes[d.results[0].hypothesis.class_id] = (p.x, p.y, p.z)
 
-    def _on_residual(self, msg):
-        clipped = clip_residual(msg.data)
-        if clipped is None:
-            self.get_logger().warn(f"ignoring malformed /grasp_residual: {list(msg.data)}")
-            return
-        self.residual = clipped
-
     def _on_command(self, msg):
         # Queue it: the cycle below makes blocking service and action calls,
         # which cannot run inside a subscription callback.
@@ -179,31 +116,46 @@ class TaskServer(Node):
 
     # --- primitives ----------------------------------------------------------
 
-    def _ik(self, xyz, jaws, yaw, pitch, seeds, timeout=2.0):
-        """One IK query per seed at a FIXED orientation. Joint angles, or None.
+    def solve_ik(self, xyz, jaws):
+        """
+        Find joint angles putting the TCP at xyz, jaws pointing straight down.
 
         `jaws` is the jaw position the arm will be HOLDING when it makes this
         move, and it matters: collision checking with the jaws open validates a
         state the robot is never in while carrying, and closing them on a cube
-        swings the jaw meshes into the forearm. That is configuration
-        dependent, so it has to be checked in the configuration that will
-        actually be executed.
+        swings the jaw meshes 3 cm into the forearm's collision box. That is a
+        real, configuration-dependent contact (jaw1 <-> link4_forearm shows up
+        in ~25% of random states), so it has to be checked in the configuration
+        that will actually be executed.
 
-        KDL's IK is a local numeric solver, so it succeeds or fails depending
-        on where it starts, which is why the caller hands in several seeds.
+        KDL's IK is also a local numeric solver, so it succeeds or fails
+        depending on where it starts. Try the arm's current state first, then
+        home, then perturbations of home; a target that survives none of those
+        is genuinely out of reach.
         """
-        for seed in seeds:
+        rng = random.Random(0)
+        home = self.cfg["home"]
+        seeds = [self.joints or home, home]
+        seeds += [[a + rng.gauss(0, 0.4) for a in home] for _ in range(6)]
+        # A cube is square, so which way the jaws close does not matter: yaw about
+        # the vertical is free, and sweeping it turns targets that have no
+        # solution at one jaw angle into ones that do. The blue cube is exactly
+        # such a target - reachable, but not with the jaws left at yaw 0.
+        yaws = [0.0, math.pi / 2, math.pi, -math.pi / 2]
+        last = None
+        for yaw, seed in ((y, s) for s in seeds for y in yaws):
             ps = PoseStamped()
             ps.header.frame_id = "base_link"
             ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = xyz
-            (ps.pose.orientation.x, ps.pose.orientation.y,
-             ps.pose.orientation.z, ps.pose.orientation.w) = grasp_quaternion(yaw, pitch)
+            # Rotation about base Z only: -Z keeps pointing at the bench, which
+            # is what makes this a top-down grasp (see gripper.xacro).
+            ps.pose.orientation.z = math.sin(yaw / 2)
+            ps.pose.orientation.w = math.cos(yaw / 2)
             req = GetPositionIK.Request()
             req.ik_request.group_name = "arm"
             req.ik_request.ik_link_name = "tcp"
             req.ik_request.pose_stamped = ps
-            req.ik_request.timeout.sec = int(timeout)
-            req.ik_request.timeout.nanosec = int((timeout % 1.0) * 1e9)
+            req.ik_request.timeout.sec = 2
             req.ik_request.avoid_collisions = True
             req.ik_request.robot_state = RobotState()
             req.ik_request.robot_state.joint_state.name = ARM + JAWS
@@ -216,85 +168,10 @@ class TaskServer(Node):
                 got = dict(zip(res.solution.joint_state.name,
                                res.solution.joint_state.position))
                 return [got[j] for j in ARM]
-        return None
-
-    def seeds(self, count=6):
-        """Start points for the numeric solver: current state, home, then noise."""
-        rng = random.Random(0)
-        home = self.cfg["home"]
-        return [self.joints or home, home] + [
-            [a + rng.gauss(0, 0.4) for a in home] for _ in range(count)]
-
-    def solve_ik(self, xyz, jaws):
-        """Top down solution at xyz, sweeping the free yaw. Raises if none."""
-        seeds = self.seeds()
-        # A cube is square, so which way the jaws close does not matter: yaw
-        # about the vertical is free, and sweeping it turns targets that have no
-        # solution at one jaw angle into ones that do.
-        for yaw in TOP_DOWN_YAWS:
-            got = self._ik(xyz, jaws, yaw, 0.0, seeds)
-            if got is not None:
-                return got
+            last = "timeout" if res is None else res.error_code.val
         raise RuntimeError(
-            f"no IK for {tuple(round(v, 3) for v in xyz)} straight down, "
-            f"{len(seeds) * len(TOP_DOWN_YAWS)} seed/yaw combinations")
-
-    def plan_pick(self, xyz, lift, opened, grip, grip_tilted):
-        """Approach, descend and lift, as one orientation that solves all three.
-
-        The three waypoints have to share an orientation, because the arm holds
-        one pose from the standoff down to the cube and back up. Solving them
-        independently could pick a different tilt for each and produce a route
-        the wrist cannot actually fly.
-
-        Tilt is what makes the close in half of the bench reachable. Every grasp
-        used to be built from a yaw alone, so the jaws always pointed straight
-        down and the only freedom was the spin about the vertical. That is not a
-        wrist limit, joint5 has 213 degrees of travel: it was simply the only
-        thing ever asked for, and a straight down grasp near the base has to
-        fold the arm back over itself. Measured, radius 0.25 to 0.40 succeeded
-        2 times in 6 that way.
-
-        Straight down is still tried first and with the most seeds, so the easy
-        majority of placements behave exactly as they did before and cost the
-        same. Tilting is an escalation for the ones that would otherwise fail.
-        """
-        x, y, z = xyz
-        wide, narrow = self.seeds(), self.seeds(2)
-        attempts = [(yaw, 0.0, wide, 2.0) for yaw in TOP_DOWN_YAWS]
-        attempts += [(yaw, pitch, narrow, 0.5)
-                     for pitch in TILTS for yaw in TILT_YAWS]
-
-        for yaw, pitch, seeds, timeout in attempts:
-            # A tilted grasp is squeezed harder, and the lift has to be solved
-            # in the jaw position it will actually be flown in, so the choice
-            # has to happen here rather than after a route is picked.
-            hold = grip if pitch == 0.0 else grip_tilted
-            # Back off along the tool axis rather than straight up. With no tilt
-            # the two are the same thing, which is why this reduces exactly to
-            # the old behaviour at pitch 0.
-            back = (lift * math.sin(pitch) * math.cos(yaw),
-                    lift * math.sin(pitch) * math.sin(yaw),
-                    lift * math.cos(pitch))
-            standoff = (x + back[0], y + back[1], z + back[2])
-
-            approach = self._ik(standoff, opened, yaw, pitch, seeds, timeout)
-            if approach is None:
-                continue
-            descend = self._ik((x, y, z), opened, yaw, pitch, seeds, timeout)
-            if descend is None:
-                continue
-            up = self._ik(standoff, hold, yaw, pitch, seeds, timeout)
-            if up is None:
-                continue
-            if pitch:
-                self.say(f"tilted grasp: {math.degrees(pitch):.0f} deg off vertical, "
-                         f"yaw {math.degrees(yaw):.0f}, squeezing to {hold}")
-            return ([("approach", approach), ("descend", descend), ("lift", up)],
-                    standoff, hold)
-        raise RuntimeError(
-            f"no reachable grasp for {tuple(round(v, 3) for v in (x, y, z))} at any "
-            f"of {len(attempts)} orientations")
+            f"no IK for {tuple(round(v, 3) for v in xyz)} after "
+            f"{len(seeds) * len(yaws)} seed/yaw combinations ({last})")
 
     def move_to(self, q, what):
         """Plan and execute to joint angles q. Collision-aware, via move_group."""
@@ -349,47 +226,29 @@ class TaskServer(Node):
         lift = self.cfg["approach"]
         self.say(f"picking {colour} at ({x:.3f}, {y:.3f}, {z:.3f}) -> ({px:.3f}, {py:.3f})")
 
-        # The learned correction moves where we reach for the cube, and nothing
-        # else. The place waypoints below stay on the requested target: the
-        # residual exists to fix calibration error in the detection, and the
-        # destination did not come from the camera.
-        dx, dy, dz = self.residual
-        gx, gy, gz = x + dx, y + dy, z + dz
-        if any(self.residual):
-            self.say(f"grasp residual ({dx * 1000:+.0f}, {dy * 1000:+.0f}, "
-                     f"{dz * 1000:+.0f}) mm")
-
         opened, grip = self.cfg["open"], self.cfg["grip"]
         # Each waypoint carries the jaw position it will be executed with, so
         # "lift" and "approach" are separate solutions even though they are the
         # same point in space - one is flown with an empty gripper, the other
         # with a cube in it, and they collision-check differently.
-        # The pick is solved as a unit: approach, descend and lift share one
-        # orientation, tilting off vertical only if straight down fails. The
-        # jaws are open on the way down and closed on the way up, which is the
-        # state each waypoint is checked in.
-        pick, standoff, hold = self.plan_pick(
-            (gx, gy, gz), lift, opened, grip, self.cfg["grip_tilted"])
-        place = [
-            ("carry", (px, py, standoff[2]), hold),
-            ("lower", (px, py, z), hold),
+        route = [
+            ("approach", (x, y, z + lift), opened),
+            ("descend", (x, y, z), opened),
+            ("lift", (x, y, z + lift), grip),
+            ("carry", (px, py, z + lift), grip),
+            ("lower", (px, py, z), grip),
             ("retreat", (px, py, z + lift), opened),
         ]
         # Solve every waypoint BEFORE moving anything. A place spot that turns
         # out to be unreachable halfway through leaves the arm stranded holding
         # a cube; found now, it costs nothing and the arm has not left home.
-        plan = pick + [(what, self.solve_ik(xyz, jaws)) for what, xyz, jaws in place]
-
-        # One correction applies to one cycle. Leaving it set would silently
-        # bias the next command, which may be a different cube in a different
-        # place, so it expires here rather than lingering.
-        self.residual = (0.0, 0.0, 0.0)
+        plan = [(what, self.solve_ik(xyz, jaws)) for what, xyz, jaws in route]
 
         self.set_jaws(opened)
         for what, q in plan:
             self.move_to(q, what)
             if what == "descend":
-                self.set_jaws(hold)
+                self.set_jaws(grip)
             elif what == "lower":
                 self.set_jaws(opened)
         self.go_home()
