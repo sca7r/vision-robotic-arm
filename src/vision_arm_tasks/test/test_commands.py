@@ -83,3 +83,30 @@ def test_tool_axis_matches_the_standoff_offset(yaw, pitch):
 def test_tilt_is_the_angle_off_vertical(pitch):
     down = rotate(grasp_quaternion(0.0, pitch), (0.0, 0.0, -1.0))
     assert math.acos(-down[2]) == pytest.approx(pitch, abs=1e-9)
+
+
+# --- the /grasp_residual trust boundary --------------------------------------
+
+clip_residual = task_server.clip_residual
+LIMIT = task_server.RESIDUAL_LIMIT
+
+
+def test_residual_inside_the_envelope_is_kept():
+    assert clip_residual([0.001, -0.002, 0.0]) == (0.001, -0.002, 0.0)
+
+
+def test_residual_outside_the_envelope_is_clamped():
+    assert clip_residual([1.0, -1.0, 0.5]) == (LIMIT, -LIMIT, LIMIT)
+
+
+# A policy mid-training publishes NaN, and a topic can be published by anything.
+# Applying part of such a message would move the grasp somewhere nobody asked for.
+@pytest.mark.parametrize("values", [
+    [],
+    [0.001, 0.002],
+    [0.001, 0.002, 0.003, 0.004],
+    [float("nan"), 0.0, 0.0],
+    [float("inf"), 0.0, 0.0],
+])
+def test_malformed_residuals_are_dropped(values):
+    assert clip_residual(values) is None

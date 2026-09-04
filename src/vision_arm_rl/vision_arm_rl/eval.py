@@ -18,7 +18,6 @@ import sys
 
 import numpy as np
 
-from .bench import RESIDUAL_LIMIT
 from .residual_env import ResidualGraspEnv
 
 
@@ -30,6 +29,9 @@ def main(argv=None):
                     help="same seed gives the same placements, which is what "
                          "makes baseline and policy runs comparable")
     ap.add_argument("--model", default=None, help="checkpoint; omit for the baseline")
+    ap.add_argument("--radius", type=float, nargs=2, metavar=("LO", "HI"),
+                    help="sample this distance band from the base instead of the "
+                         "default working envelope")
     args = ap.parse_args(argv)
 
     policy = None
@@ -37,7 +39,7 @@ def main(argv=None):
         from stable_baselines3 import SAC
         policy = SAC.load(args.model)
 
-    env = ResidualGraspEnv(seed=args.seed)
+    env = ResidualGraspEnv(seed=args.seed, radius=args.radius)
     rows, wins, skipped, consecutive = [], 0, 0, 0
     for i in range(args.trials):
         try:

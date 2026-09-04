@@ -54,11 +54,34 @@ RESIDUAL_LIMIT = 0.015
 # A cube is square, so the spin of the jaws about the approach axis is free.
 TOP_DOWN_YAWS = [0.0, math.pi / 2, math.pi, -math.pi / 2]
 
-# Tilted grasps, tried only when straight down finds nothing. Once the approach
-# is off vertical the yaw is no longer free: it picks WHICH WAY the gripper
-# leans, so it needs finer coverage than the four top down angles.
-TILTS = [math.radians(a) for a in (20, 35, 50)]
+# Tilted grasps, tried only when straight down finds nothing, best first.
+#
+# 90 comes before the intermediates because of the shape of the object. The jaws
+# close along the tool Y axis and pitch turns about that same axis, so the jaw
+# opening direction stays horizontal at every tilt. Straight down therefore puts
+# the flat plates on two opposite vertical faces of a cube, and straight
+# sideways does the same thing from the side: both are flat contact. The angles
+# in between are the awkward ones, where the plates still meet the face but the
+# finger geometry leans into the bench and pushes the cube out as it closes. A
+# measured tilted grasp at 35 degrees found a reachable pose, flew it, and
+# reported "the grasp slipped or closed on nothing".
+#
+# Intermediates are kept as a last resort, because a pose that is reachable and
+# grips badly still beats no pose at all.
+TILTS = [math.radians(a) for a in (90, 60, 30)]
 TILT_YAWS = [math.radians(a) for a in range(0, 360, 45)]
+
+
+def clip_residual(values):
+    """Three finite numbers clamped to the envelope, or None if the message is junk.
+
+    Anything that is not three finite numbers is dropped rather than partially
+    applied: a half-read correction is worse than none.
+    """
+    values = list(values)
+    if len(values) != 3 or not all(math.isfinite(v) for v in values):
+        return None
+    return tuple(max(-RESIDUAL_LIMIT, min(RESIDUAL_LIMIT, float(v))) for v in values)
 
 
 def grasp_quaternion(yaw, pitch):
@@ -139,17 +162,11 @@ class TaskServer(Node):
             self.cubes[d.results[0].hypothesis.class_id] = (p.x, p.y, p.z)
 
     def _on_residual(self, msg):
-        """Take a learned correction to the grasp point, clamped to the envelope.
-
-        Anything that is not three finite numbers is dropped rather than
-        partially applied: a half-read correction is worse than none.
-        """
-        values = list(msg.data)
-        if len(values) != 3 or not all(math.isfinite(v) for v in values):
-            self.get_logger().warn(f"ignoring malformed /grasp_residual: {values}")
+        clipped = clip_residual(msg.data)
+        if clipped is None:
+            self.get_logger().warn(f"ignoring malformed /grasp_residual: {list(msg.data)}")
             return
-        self.residual = tuple(
-            max(-RESIDUAL_LIMIT, min(RESIDUAL_LIMIT, float(v))) for v in values)
+        self.residual = clipped
 
     def _on_command(self, msg):
         # Queue it: the cycle below makes blocking service and action calls,
@@ -222,7 +239,7 @@ class TaskServer(Node):
             f"no IK for {tuple(round(v, 3) for v in xyz)} straight down, "
             f"{len(seeds) * len(TOP_DOWN_YAWS)} seed/yaw combinations")
 
-    def plan_pick(self, xyz, lift, opened, grip):
+    def plan_pick(self, xyz, lift, opened, grip, grip_tilted):
         """Approach, descend and lift, as one orientation that solves all three.
 
         The three waypoints have to share an orientation, because the arm holds
@@ -249,6 +266,10 @@ class TaskServer(Node):
                      for pitch in TILTS for yaw in TILT_YAWS]
 
         for yaw, pitch, seeds, timeout in attempts:
+            # A tilted grasp is squeezed harder, and the lift has to be solved
+            # in the jaw position it will actually be flown in, so the choice
+            # has to happen here rather than after a route is picked.
+            hold = grip if pitch == 0.0 else grip_tilted
             # Back off along the tool axis rather than straight up. With no tilt
             # the two are the same thing, which is why this reduces exactly to
             # the old behaviour at pitch 0.
@@ -263,13 +284,14 @@ class TaskServer(Node):
             descend = self._ik((x, y, z), opened, yaw, pitch, seeds, timeout)
             if descend is None:
                 continue
-            up = self._ik(standoff, grip, yaw, pitch, seeds, timeout)
+            up = self._ik(standoff, hold, yaw, pitch, seeds, timeout)
             if up is None:
                 continue
             if pitch:
                 self.say(f"tilted grasp: {math.degrees(pitch):.0f} deg off vertical, "
-                         f"yaw {math.degrees(yaw):.0f}")
-            return [("approach", approach), ("descend", descend), ("lift", up)], standoff
+                         f"yaw {math.degrees(yaw):.0f}, squeezing to {hold}")
+            return ([("approach", approach), ("descend", descend), ("lift", up)],
+                    standoff, hold)
         raise RuntimeError(
             f"no reachable grasp for {tuple(round(v, 3) for v in (x, y, z))} at any "
             f"of {len(attempts)} orientations")
@@ -346,10 +368,11 @@ class TaskServer(Node):
         # orientation, tilting off vertical only if straight down fails. The
         # jaws are open on the way down and closed on the way up, which is the
         # state each waypoint is checked in.
-        pick, standoff = self.plan_pick((gx, gy, gz), lift, opened, grip)
+        pick, standoff, hold = self.plan_pick(
+            (gx, gy, gz), lift, opened, grip, self.cfg["grip_tilted"])
         place = [
-            ("carry", (px, py, standoff[2]), grip),
-            ("lower", (px, py, z), grip),
+            ("carry", (px, py, standoff[2]), hold),
+            ("lower", (px, py, z), hold),
             ("retreat", (px, py, z + lift), opened),
         ]
         # Solve every waypoint BEFORE moving anything. A place spot that turns
@@ -366,7 +389,7 @@ class TaskServer(Node):
         for what, q in plan:
             self.move_to(q, what)
             if what == "descend":
-                self.set_jaws(grip)
+                self.set_jaws(hold)
             elif what == "lower":
                 self.set_jaws(opened)
         self.go_home()

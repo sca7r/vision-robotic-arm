@@ -24,6 +24,14 @@ places:
 open: 0.0
 grip: -0.035
 
+# The squeeze used when the grasp is not straight down. A tilted approach puts
+# the jaw plates onto the cube at an angle and leans the finger geometry toward
+# the bench, and at -0.035 the cube was measurably being nudged out rather than
+# held. More interference buys grip force from a position controlled jaw. Jaw
+# limits are [-0.052, 0], so there is room, but past about -0.045 the jaws fight
+# the cube hard enough to flick it.
+grip_tilted: -0.040
+
 # How far from the requested spot a cube may land before the move is reported
 # as failed. Generous on purpose: this is here to catch "the cube never moved",
 # not to grade millimetres.

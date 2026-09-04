@@ -94,7 +94,11 @@ def set_pose(model, x, y, z):
 class GraspBench:
     """One grasp attempt at a time, against the running stack."""
 
-    def __init__(self, colour="red", place="left", seed=0, timeout=180.0):
+    def __init__(self, colour="red", place="left", seed=0, timeout=180.0,
+                 radius=None):
+        # radius overrides R_RANGE, for probing a band deliberately, such as the
+        # close in one where straight down grasps used to fail.
+        self.r_range = tuple(radius) if radius else R_RANGE
         self.colour = colour
         self.model = f"cube_{colour}"
         self.timeout = timeout
@@ -167,7 +171,7 @@ class GraspBench:
         while True:
             x = self.rng.uniform(*X_RANGE)
             y = self.rng.uniform(*Y_RANGE)
-            if R_RANGE[0] <= math.hypot(x, y) <= R_RANGE[1]:
+            if self.r_range[0] <= math.hypot(x, y) <= self.r_range[1]:
                 return x, y
 
     def wait_until_seen(self, x, y, tol=0.01, timeout=30.0):
